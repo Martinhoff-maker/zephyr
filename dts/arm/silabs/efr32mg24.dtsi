@@ -276,7 +276,7 @@
 		};
 
 		usart0: usart@5005c000 {
-			compatible = "silabs,gecko-usart";
+			compatible = "silabs,usart";
 			reg = <0x5005C000 0x306c>;
 			interrupts = <9 0>, <10 0>;
 			interrupt-names = "rx", "tx";
