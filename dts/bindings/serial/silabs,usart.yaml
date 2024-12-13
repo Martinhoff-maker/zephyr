@@ -1,0 +1,32 @@
+description: Silabs USART
+
+compatible: "silabs,usart"
+
+include: [uart-controller.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+  peripheral-id:
+    type: int
+    description: peripheral ID
+
+  location-rx:
+    type: array
+    description: RX pin configuration defined as <location port pin>
+
+  location-tx:
+    type: array
+    description: TX pin configuration defined as <location port pin>
+
+  location-rts:
+    type: array
+    description: RTS pin configuration defined as <location port pin>
+
+  location-cts:
+    type: array
+    description: CTS pin configuration defined as <location port pin>
