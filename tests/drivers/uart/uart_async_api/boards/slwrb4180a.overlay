@@ -5,8 +5,8 @@
  */
 
 dut: &uart0 {
-	dmas = <&dma0 0 80 STM32_DMA_PERIPH_TX>,
-		<&dma0 1 79 STM32_DMA_PERIPH_RX>;
+	dmas = <&dma0 0 0x1000002 1>,
+		<&dma0 1 0x1000000 2>;
 	dma-names = "tx", "rx";
 	current-speed = <115200>;
 	status = "okay";
