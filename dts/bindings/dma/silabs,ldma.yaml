@@ -24,3 +24,11 @@ properties:
   dma_channels:
     type: int
     required: true
+
+  "#dma-cells":
+    const: 3
+
+dma-cells:
+  - channel
+  - slot
+  - channel-config
