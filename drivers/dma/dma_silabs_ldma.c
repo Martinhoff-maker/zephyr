@@ -118,8 +118,10 @@ static int dma_silabs_block_to_descriptor(struct dma_config *config,
 
 	src_size = config->source_data_size;
 	desc->xfer.size = LOG2(src_size);
-
-	if (block->block_size % config->source_data_size) {
+	if(block->block_size == 0){
+		// In case the descriptor in not already configured (like for uart)
+		xfer_count = 0;
+	} else if (block->block_size % config->source_data_size) {
 		xfer_count = block->block_size / config->source_data_size;
 	} else {
 		xfer_count = block->block_size / config->source_data_size - 1;
@@ -146,8 +148,10 @@ static int dma_silabs_block_to_descriptor(struct dma_config *config,
 	 * in the list (block for zephyr)
 	 */
 	desc->xfer.doneIfs = config->complete_callback_en;
-	desc->xfer.reqMode = ldmaCtrlReqModeAll;
-	desc->xfer.ignoreSrec = block->flow_control_mode;
+	desc->xfer.reqMode = ldmaCtrlReqModeBlock;
+	desc->xfer.ignoreSrec = 1;//block->flow_control_mode;
+	// desc->xfer.reqMode = ldmaCtrlReqModeAll;
+	// desc->xfer.ignoreSrec = block->flow_control_mode;
 
 	/* In silabs LDMA, increment sign is managed with the transfer configuration
 	 * which is common for all descs of the channel. Zephyr DMA API allows
@@ -336,7 +340,7 @@ static int dma_silabs_configure(const struct device *dev, uint32_t channel,
 		return -ENOTSUP;
 	}
 
-	LDMA_StopTransfer(channel);
+	//LDMA_StopTransfer(channel);
 
 	chan_conf->user_data = config->user_data;
 	chan_conf->cb = config->dma_callback;
@@ -349,8 +353,10 @@ static int dma_silabs_configure(const struct device *dev, uint32_t channel,
 	case MEMORY_TO_MEMORY:
 		break;
 	case PERIPHERAL_TO_MEMORY:
+			xfer_config->ldmaReqSel = 0x40000;
+		break;
 	case MEMORY_TO_PERIPHERAL:
-		xfer_config->ldmaReqSel = config->dma_slot;
+			xfer_config->ldmaReqSel = 0x40002;
 		break;
 	case PERIPHERAL_TO_PERIPHERAL:
 	case HOST_TO_MEMORY:
@@ -395,12 +401,19 @@ static int dma_silabs_configure(const struct device *dev, uint32_t channel,
 		break;
 	}
 
+	xfer_config->ldmaDbgHalt = 1;
+
 	ret = dma_silabs_configure_descriptor(config, data, chan_conf);
 	if (ret) {
 		return ret;
 	}
 
 	atomic_set_bit(data->dma_ctx.atomic, channel);
+
+	// CORE_ATOMIC_SECTION(
+    	// 	LDMA->IEN &= ~(1UL << (uint8_t)channel);
+    	// 	LDMA->CHDIS = 1UL << (uint8_t)channel;
+    	// )
 
 	return 0;
 }
@@ -416,6 +429,10 @@ static int dma_silabs_start(const struct device *dev, uint32_t channel)
 	}
 
 	atomic_inc(&chan->busy);
+
+	CORE_ATOMIC_SECTION(
+    		LDMA->REQCLEAR = 1UL << (uint8_t)channel;
+    	)
 
 	LDMA_StartTransfer(channel, &chan->xfer_config, chan->desc);
 
@@ -440,6 +457,38 @@ static int dma_silabs_stop(const struct device *dev, uint32_t channel)
 	return 0;
 }
 
+static int dma_silabs_suspend(const struct device *dev, uint32_t channel)
+{
+	const struct dma_silabs_data *data = dev->data;
+	struct dma_silabs_channel *chan = &data->dma_chan_table[channel];
+
+	if (channel > data->dma_ctx.dma_channels) {
+		return -EINVAL;
+	}
+
+	LDMA_EnableChannelRequest(channel, false);
+
+	atomic_clear(&chan->busy);
+
+	return 0;
+}
+
+static int dma_silabs_resume(const struct device *dev, uint32_t channel)
+{
+	const struct dma_silabs_data *data = dev->data;
+	struct dma_silabs_channel *chan = &data->dma_chan_table[channel];
+
+	if (channel > data->dma_ctx.dma_channels) {
+		return -EINVAL;
+	}
+
+	LDMA_EnableChannelRequest(channel, true);
+
+	atomic_inc(&chan->busy);
+
+	return 0;
+}
+
 static int dma_silabs_get_status(const struct device *dev, uint32_t channel,
 				 struct dma_status *status)
 {
@@ -452,6 +501,8 @@ static int dma_silabs_get_status(const struct device *dev, uint32_t channel,
 	if (!atomic_test_bit(data->dma_ctx.atomic, channel)) {
 		return -EINVAL;
 	}
+
+	status->pending_length = LDMA_TransferRemainingCount(channel);
 
 	status->busy = data->dma_chan_table[channel].busy;
 	status->dir = data->dma_chan_table[channel].dir;
@@ -482,6 +533,8 @@ static DEVICE_API(dma, dma_funcs) = {
 	.config = dma_silabs_configure,
 	.start = dma_silabs_start,
 	.stop = dma_silabs_stop,
+	.suspend = dma_silabs_suspend,
+	.resume = dma_silabs_resume,
 	.get_status = dma_silabs_get_status
 };
 
