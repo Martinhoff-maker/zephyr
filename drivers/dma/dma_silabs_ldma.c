@@ -340,7 +340,7 @@ static int dma_silabs_configure(const struct device *dev, uint32_t channel,
 		return -ENOTSUP;
 	}
 
-	//LDMA_StopTransfer(channel);
+	LDMA_StopTransfer(channel);
 
 	chan_conf->user_data = config->user_data;
 	chan_conf->cb = config->dma_callback;
@@ -402,6 +402,7 @@ static int dma_silabs_configure(const struct device *dev, uint32_t channel,
 	}
 
 	xfer_config->ldmaDbgHalt = 1;
+	xfer_config->ldmaCtrlSyncPrsClrOn = 1;
 
 	ret = dma_silabs_configure_descriptor(config, data, chan_conf);
 	if (ret) {
@@ -409,12 +410,7 @@ static int dma_silabs_configure(const struct device *dev, uint32_t channel,
 	}
 
 	atomic_set_bit(data->dma_ctx.atomic, channel);
-
-	// CORE_ATOMIC_SECTION(
-    	// 	LDMA->IEN &= ~(1UL << (uint8_t)channel);
-    	// 	LDMA->CHDIS = 1UL << (uint8_t)channel;
-    	// )
-
+	
 	return 0;
 }
 
@@ -430,9 +426,13 @@ static int dma_silabs_start(const struct device *dev, uint32_t channel)
 
 	atomic_inc(&chan->busy);
 
-	CORE_ATOMIC_SECTION(
-    		LDMA->REQCLEAR = 1UL << (uint8_t)channel;
-    	)
+	// CORE_ATOMIC_SECTION(
+    	// 	LDMA->REQCLEAR = 1UL << (uint8_t)channel;
+    	// )
+	uint32_t flag = LDMA->REQPEND;
+	if(flag & (1 << channel)){
+		LOG_DBG("REQPEND is set");
+	}
 
 	LDMA_StartTransfer(channel, &chan->xfer_config, chan->desc);
 
@@ -453,38 +453,6 @@ static int dma_silabs_stop(const struct device *dev, uint32_t channel)
 	atomic_clear(&chan->busy);
 
 	LDMA_IntClear(BIT(channel));
-
-	return 0;
-}
-
-static int dma_silabs_suspend(const struct device *dev, uint32_t channel)
-{
-	const struct dma_silabs_data *data = dev->data;
-	struct dma_silabs_channel *chan = &data->dma_chan_table[channel];
-
-	if (channel > data->dma_ctx.dma_channels) {
-		return -EINVAL;
-	}
-
-	LDMA_EnableChannelRequest(channel, false);
-
-	atomic_clear(&chan->busy);
-
-	return 0;
-}
-
-static int dma_silabs_resume(const struct device *dev, uint32_t channel)
-{
-	const struct dma_silabs_data *data = dev->data;
-	struct dma_silabs_channel *chan = &data->dma_chan_table[channel];
-
-	if (channel > data->dma_ctx.dma_channels) {
-		return -EINVAL;
-	}
-
-	LDMA_EnableChannelRequest(channel, true);
-
-	atomic_inc(&chan->busy);
 
 	return 0;
 }
@@ -533,8 +501,6 @@ static DEVICE_API(dma, dma_funcs) = {
 	.config = dma_silabs_configure,
 	.start = dma_silabs_start,
 	.stop = dma_silabs_stop,
-	.suspend = dma_silabs_suspend,
-	.resume = dma_silabs_resume,
 	.get_status = dma_silabs_get_status
 };
 
