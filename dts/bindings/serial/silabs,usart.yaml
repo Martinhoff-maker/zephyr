@@ -15,18 +15,22 @@ properties:
     type: int
     description: peripheral ID
 
-  location-rx:
-    type: array
-    description: RX pin configuration defined as <location port pin>
+  current-speed:
+    description: |
+      Initial baud rate setting for UART. Defaults to standard baudrate of 115200 if not specified.
+    default: 115200
 
-  location-tx:
-    type: array
-    description: TX pin configuration defined as <location port pin>
+  parity:
+    description: |
+      Configures the parity of the adapter
+    default: "none"
 
-  location-rts:
-    type: array
-    description: RTS pin configuration defined as <location port pin>
+  stop-bits:
+    description: |
+      Sets the number of stop bits. Defaults to standard of 1 if not specified.
+    default: "1"
 
-  location-cts:
-    type: array
-    description: CTS pin configuration defined as <location port pin>
+  data-bits:
+    description: |
+      Sets the number of data bits. Defaults to standard of 8 if not specified.
+    default: 8

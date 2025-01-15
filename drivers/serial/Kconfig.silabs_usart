@@ -7,11 +7,9 @@ config UART_SILABS_USART
 	bool "Silabs USART driver"
 	default y
 	depends on DT_HAS_SILABS_USART_ENABLED
-	depends on SOC_FAMILY_SILABS_S2
 	select SERIAL_HAS_DRIVER
 	select SERIAL_SUPPORT_INTERRUPT
 	select SOC_GECKO_USART
-	# ASYNC implementation requires a DMA controller
 	select SERIAL_SUPPORT_ASYNC \
 		if DT_HAS_SILABS_LDMA_ENABLED
 	select DMA if UART_ASYNC_API

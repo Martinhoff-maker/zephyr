@@ -21,6 +21,7 @@ LOG_MODULE_REGISTER(uart_silabs, CONFIG_UART_LOG_LEVEL);
 
 #ifdef CONFIG_UART_ASYNC_API
 #include <zephyr/drivers/dma.h>
+#include <zephyr/drivers/dma/dma_silabs_ldma.h>
 #endif
 
 #define DT_DRV_COMPAT silabs_usart
@@ -35,15 +36,12 @@ struct uart_dma_channel {
 	uint32_t dma_channel;
 	struct dma_config dma_cfg;
 	uint8_t priority;
-	bool src_addr_increment;
-	bool dst_addr_increment;
 	int fifo_threshold;
-	int descr_cnt;
-	struct dma_block_config blk_cfg[2];
+	struct dma_block_config blk_cfg;
 	uint8_t *buffer;
 	size_t buffer_length;
-	size_t offset;
 	volatile size_t counter;
+	size_t offset;
 	int32_t timeout;
 	bool enabled;
 };
@@ -60,6 +58,7 @@ struct uart_silabs_config {
 };
 
 struct uart_silabs_data {
+	struct uart_config uart_cfg;
 #ifdef CONFIG_UART_INTERRUPT_DRIVEN
 	uart_irq_callback_user_data_t callback;
 	void *cb_data;
@@ -257,17 +256,13 @@ static inline void async_user_callback(struct uart_silabs_data *data, struct uar
 
 static inline void async_evt_rx_rdy(struct uart_silabs_data *data)
 {
-	LOG_DBG("rx_rdy: (%d %d)", data->dma_rx.offset, data->dma_rx.counter);
-
 	struct uart_event event = {.type = UART_RX_RDY,
 				   .data.rx.buf = data->dma_rx.buffer,
 				   .data.rx.len = data->dma_rx.counter - data->dma_rx.offset,
 				   .data.rx.offset = data->dma_rx.offset};
 
-	/* update the current pos for new data */
 	data->dma_rx.offset = data->dma_rx.counter;
 
-	/* send event only for new data */
 	if (event.data.rx.len > 0) {
 		async_user_callback(data, &event);
 	}
@@ -275,13 +270,10 @@ static inline void async_evt_rx_rdy(struct uart_silabs_data *data)
 
 static inline void async_evt_tx_done(struct uart_silabs_data *data)
 {
-	LOG_DBG("tx done: %d", data->dma_tx.counter);
-
 	struct uart_event event = {.type = UART_TX_DONE,
 				   .data.tx.buf = data->dma_tx.buffer,
 				   .data.tx.len = data->dma_tx.counter};
 
-	/* Reset tx buffer */
 	data->dma_tx.buffer_length = 0;
 	data->dma_tx.counter = 0;
 
@@ -290,13 +282,10 @@ static inline void async_evt_tx_done(struct uart_silabs_data *data)
 
 static inline void async_evt_tx_abort(struct uart_silabs_data *data)
 {
-	LOG_DBG("tx abort: %d", data->dma_tx.counter);
-
 	struct uart_event event = {.type = UART_TX_ABORTED,
 				   .data.tx.buf = data->dma_tx.buffer,
 				   .data.tx.len = data->dma_tx.counter};
 
-	/* Reset tx buffer */
 	data->dma_tx.buffer_length = 0;
 	data->dma_tx.counter = 0;
 
@@ -305,8 +294,6 @@ static inline void async_evt_tx_abort(struct uart_silabs_data *data)
 
 static inline void async_evt_rx_err(struct uart_silabs_data *data, int err_code)
 {
-	LOG_DBG("rx error: %d", err_code);
-
 	struct uart_event event = {.type = UART_RX_STOPPED,
 				   .data.rx_stop.reason = err_code,
 				   .data.rx_stop.data.len = data->dma_rx.counter,
@@ -350,33 +337,25 @@ static void uart_silabs_dma_replace_buffer(const struct device *dev)
 {
 	struct uart_silabs_data *data = dev->data;
 
-	/* Replace the buffer and reload the DMA */
-	LOG_DBG("Replacing RX buffer: %d", data->rx_next_buffer_len);
-
-	/* reload DMA */
 	data->dma_rx.offset = 0;
 	data->dma_rx.counter = 0;
 	data->dma_rx.buffer = data->rx_next_buffer;
 	data->dma_rx.buffer_length = data->rx_next_buffer_len;
-	// data->dma_rx.blk_cfg.block_size = data->dma_rx.buffer_length;
-	// data->dma_rx.blk_cfg.dest_address = (uint32_t)data->dma_rx.buffer;
 	data->rx_next_buffer = NULL;
 	data->rx_next_buffer_len = 0;
 
-	/* Request next buffer */
 	async_evt_rx_buf_request(data);
 }
 
-static void uart_silabs_dma_rx_flush(const struct device *dev)
+static void uart_silabs_dma_rx_flush(struct uart_silabs_data *data)
 {
 	struct dma_status stat;
-	struct uart_silabs_data *data = dev->data;
+	size_t rx_rcv_len;
 
-	if (dma_get_status(data->dma_rx.dma_dev, data->dma_rx.dma_channel, &stat) == 0) {
-		size_t rx_rcv_len = data->dma_rx.buffer_length - stat.pending_length;
+	if (!dma_get_status(data->dma_rx.dma_dev, data->dma_rx.dma_channel, &stat)) {
+		rx_rcv_len = data->dma_rx.buffer_length - stat.pending_length;
 		if (rx_rcv_len > data->dma_rx.offset) {
 			data->dma_rx.counter = rx_rcv_len;
-
 			async_evt_rx_rdy(data);
 		}
 	}
@@ -387,27 +366,25 @@ void uart_silabs_dma_rx_cb(const struct device *dma_dev, void *user_data, uint32
 {
 	const struct device *uart_dev = user_data;
 	struct uart_silabs_data *data = uart_dev->data;
+	struct uart_event disabled_event = {.type = UART_RX_DISABLED};
 
 	if (status < 0) {
 		async_evt_rx_err(data, status);
 		return;
 	}
 
-	LOG_DBG("DMA RX callback");
-
-	/* true since this functions occurs when buffer if full */
 	data->dma_rx.counter = data->dma_rx.buffer_length;
 
-	if (data->dma_rx.counter == data->dma_rx.buffer_length) {
-		async_evt_rx_rdy(data);
-		if (data->rx_next_buffer != NULL) {
-			async_evt_rx_buf_release(data);
-			/* replace the buffer when the current
-			 * is full and not the same as the next
-			 * one.
-			 */
-			uart_silabs_dma_replace_buffer(uart_dev);
-		}
+	async_evt_rx_rdy(data);
+
+	if (data->rx_next_buffer != NULL) {
+		async_evt_rx_buf_release(data);
+		uart_silabs_dma_replace_buffer(uart_dev);
+	} else {
+		dma_stop(data->dma_rx.dma_dev, data->dma_rx.dma_channel);
+		data->dma_rx.enabled = false;
+		async_evt_rx_buf_release(data);
+		async_user_callback(data, &disabled_event);
 	}
 }
 
@@ -416,24 +393,9 @@ void uart_silabs_dma_tx_cb(const struct device *dma_dev, void *user_data, uint32
 {
 	const struct device *uart_dev = user_data;
 	struct uart_silabs_data *data = uart_dev->data;
-	struct dma_status stat;
-	unsigned int key = irq_lock();
 
-	LOG_DBG("DMA TX callback");
-
-	/* Disable TX */
-	// uart_silabs_dma_tx_disable(uart_dev);
 	dma_stop(data->dma_tx.dma_dev, data->dma_tx.dma_channel);
-
-	/* Disable TCMP2 ?*/
-
-	if (!dma_get_status(data->dma_tx.dma_dev, data->dma_tx.dma_channel, &stat)) {
-		data->dma_tx.counter = data->dma_tx.buffer_length - stat.pending_length;
-	}
-
-	data->dma_tx.buffer_length = 0;
-
-	irq_unlock(key);
+	data->dma_tx.enabled = false;
 }
 
 static int uart_silabs_async_tx(const struct device *dev, const uint8_t *tx_data, size_t buf_size,
@@ -454,16 +416,14 @@ static int uart_silabs_async_tx(const struct device *dev, const uint8_t *tx_data
 	data->dma_tx.buffer = (uint8_t *)tx_data;
 	data->dma_tx.buffer_length = buf_size;
 	data->dma_tx.timeout = timeout;
-	data->dma_tx.blk_cfg[0].source_address = (uint32_t)data->dma_tx.buffer;
-	data->dma_tx.blk_cfg[0].block_size = data->dma_tx.buffer_length;
-
-	LOG_DBG("tx: l=%d", data->dma_tx.buffer_length);
-
-	config->base->CMD = USART_CMD_CLEARTX;
+	data->dma_tx.blk_cfg.source_address = (uint32_t)data->dma_tx.buffer;
+	data->dma_tx.blk_cfg.block_size = data->dma_tx.buffer_length;
 
 	USART_IntClear(config->base, USART_IF_TXC | USART_IF_TCMP2);
 	USART_IntEnable(config->base, USART_IF_TXC);
-	USART_IntEnable(config->base, USART_IF_TCMP2);
+	if (timeout >= 0) {
+		USART_IntEnable(config->base, USART_IF_TCMP2);
+	}
 
 	ret = dma_config(data->dma_tx.dma_dev, data->dma_tx.dma_channel, &data->dma_tx.dma_cfg);
 	if (ret) {
@@ -476,8 +436,6 @@ static int uart_silabs_async_tx(const struct device *dev, const uint8_t *tx_data
 		LOG_ERR("UART err: TX DMA start failed!");
 		return ret;
 	}
-
-	config->base->CMD = USART_CMD_TXEN;
 
 	data->dma_tx.enabled = true;
 
@@ -499,17 +457,11 @@ static int uart_silabs_async_tx_abort(const struct device *dev)
 	USART_IntDisable(config->base, USART_IF_TXC);
 	USART_IntDisable(config->base, USART_IF_TCMP2);
 
-	// TODO: fonctionnalité à rajouter dans le driver dma (LDMA_TransferRemainingCount)
 	if (!dma_get_status(data->dma_tx.dma_dev, data->dma_tx.dma_channel, &stat)) {
 		data->dma_tx.counter = tx_buffer_length - stat.pending_length;
 	}
 
-	// TODO : mettre à jour la quantité de data déjà envoyé
-
 	dma_stop(data->dma_tx.dma_dev, data->dma_tx.dma_channel);
-
-	config->base->CMD = USART_CMD_TXDIS;
-
 	data->dma_tx.enabled = false;
 
 	async_evt_tx_abort(data);
@@ -522,7 +474,7 @@ static int uart_silabs_async_rx_enable(const struct device *dev, uint8_t *rx_buf
 {
 	const struct uart_silabs_config *config = dev->config;
 	struct uart_silabs_data *data = dev->data;
-	int ret, desc_id;
+	int ret;
 
 	if (data->dma_rx.dma_dev == NULL) {
 		return -ENODEV;
@@ -538,13 +490,8 @@ static int uart_silabs_async_rx_enable(const struct device *dev, uint8_t *rx_buf
 	data->dma_rx.buffer_length = buf_size;
 	data->dma_rx.counter = 0;
 	data->dma_rx.timeout = timeout;
-
-	// Gérer le timeout de l'API avec le baudrate et le tcmp1
-
-	// data->dma_rx.descr_cnt = (data->dma_rx.descr_cnt + 1) % ARRAY_SIZE(data->dma_rx.blk_cfg);
-	desc_id = data->dma_rx.descr_cnt;
-	data->dma_rx.blk_cfg[desc_id].block_size = buf_size;
-	data->dma_rx.blk_cfg[desc_id].dest_address = (uint32_t)data->dma_rx.buffer;
+	data->dma_rx.blk_cfg.block_size = buf_size;
+	data->dma_rx.blk_cfg.dest_address = (uint32_t)data->dma_rx.buffer;
 
 	ret = dma_config(data->dma_rx.dma_dev, data->dma_rx.dma_channel, &data->dma_rx.dma_cfg);
 
@@ -558,24 +505,16 @@ static int uart_silabs_async_rx_enable(const struct device *dev, uint8_t *rx_buf
 		return -EFAULT;
 	}
 
-	// Clear Rx buffr
-	config->base->CMD = USART_CMD_CLEARRX;
-
-	// Clear IT
 	USART_IntClear(config->base, USART_IF_RXOF | USART_IF_TCMP1);
 	USART_IntEnable(config->base, USART_IF_RXOF);
-	USART_IntEnable(config->base, USART_IF_TCMP1);
+
+	if (timeout >= 0) {
+		USART_IntEnable(config->base, USART_IF_TCMP1);
+	}
 
 	data->dma_rx.enabled = true;
 
-	// Enable more Error IT ?
-
-	/* Request next buffer */
 	async_evt_rx_buf_request(data);
-
-	LOG_DBG("async rx enabled");
-
-	config->base->CMD = USART_CMD_RXEN;
 
 	return ret;
 }
@@ -587,8 +526,6 @@ static int uart_silabs_async_rx_disable(const struct device *dev)
 	struct uart_silabs_data *data = dev->data;
 	struct uart_event disabled_event = {.type = UART_RX_DISABLED};
 
-	LOG_DBG("rx counter = %d", data->dma_rx.counter);
-
 	if (!data->dma_rx.enabled) {
 		async_user_callback(data, &disabled_event);
 		return -EFAULT;
@@ -596,7 +533,6 @@ static int uart_silabs_async_rx_disable(const struct device *dev)
 
 	dma_stop(data->dma_rx.dma_dev, data->dma_rx.dma_channel);
 
-	// Disable Rx related IT
 	USART_IntClear(usart, USART_IF_RXOF | USART_IF_TCMP1);
 	USART_IntDisable(usart, USART_IF_RXOF);
 	USART_IntDisable(usart, USART_IF_TCMP1);
@@ -605,15 +541,10 @@ static int uart_silabs_async_rx_disable(const struct device *dev)
 		usart->CMD = USART_CMD_CLEARRX;
 	}
 
-	// Flush data that is already in the current buffer
-	uart_silabs_dma_rx_flush(dev);
+	uart_silabs_dma_rx_flush(data);
 
-	// Release buffer
 	async_evt_rx_buf_release(data);
 
-	usart->CMD = USART_CMD_RXDIS;
-
-	// Release next buffer is already provided
 	if (data->rx_next_buffer) {
 		struct uart_event rx_next_buf_release_evt = {
 			.type = UART_RX_BUF_RELEASED,
@@ -627,11 +558,6 @@ static int uart_silabs_async_rx_disable(const struct device *dev)
 
 	data->dma_rx.enabled = false;
 
-	/* When async rx is disabled, enable interruptible instance of uart to function normally */
-	// LL_USART_EnableIT_RXNE(usart);
-
-	LOG_DBG("rx: disabled");
-
 	async_user_callback(data, &disabled_event);
 
 	return 0;
@@ -641,18 +567,9 @@ static int uart_silabs_async_rx_buf_rsp(const struct device *dev, uint8_t *buf, 
 {
 	struct uart_silabs_data *data = dev->data;
 	unsigned int key;
-	int block_id;
 	int ret;
 
-	LOG_DBG("Configure next descriptor");
-
-	data->dma_rx.descr_cnt = (data->dma_rx.descr_cnt + 1) % ARRAY_SIZE(data->dma_rx.blk_cfg);
-	block_id = data->dma_rx.descr_cnt;
-
 	key = irq_lock();
-
-	// Disable UART request to DMA -> will be suspend
-	dma_stop(data->dma_rx.dma_dev,data->dma_rx.dma_channel);
 
 	if (data->rx_next_buffer != NULL) {
 		return -EBUSY;
@@ -661,28 +578,18 @@ static int uart_silabs_async_rx_buf_rsp(const struct device *dev, uint8_t *buf, 
 	} else {
 		data->rx_next_buffer = buf;
 		data->rx_next_buffer_len = len;
-		data->dma_rx.blk_cfg[block_id].dest_address = (uint32_t) buf;
-		data->dma_rx.blk_cfg[block_id].block_size = len;
+		data->dma_rx.blk_cfg.dest_address = (uint32_t)buf;
+		data->dma_rx.blk_cfg.block_size = len;
 	}
-
-	
-	ret = dma_config(data->dma_rx.dma_dev, data->dma_rx.dma_channel, &data->dma_rx.dma_cfg);
-
-	if (ret != 0) {
-		LOG_ERR("UART ERR: RX DMA config failed!");
-		return -EINVAL;
-	}
-
-	if (dma_start(data->dma_rx.dma_dev, data->dma_rx.dma_channel)) {
-		LOG_ERR("UART ERR: RX DMA start failed!");
-		return -EFAULT;
-	}
-
-
-	// Enable UART request to DMA -> will be resume
-	//dma_resume(data->dma_rx.dma_dev,data->dma_rx.dma_channel);
 
 	irq_unlock(key);
+
+	ret = silabs_ldma_append_block(data->dma_rx.dma_dev, data->dma_rx.dma_channel,
+				       &data->dma_rx.dma_cfg);
+	if (ret != 0) {
+		LOG_ERR("UART ERR: RX DMA append failed!");
+		return -EINVAL;
+	}
 
 	return ret;
 }
@@ -709,43 +616,29 @@ static int uart_silabs_async_init(const struct device *dev)
 
 	data->dma_rx.enabled = false;
 	data->dma_tx.enabled = false;
-	dma_stop(data->dma_rx.dma_dev, data->dma_rx.dma_channel);
-	dma_stop(data->dma_tx.dma_dev, data->dma_tx.dma_channel);
 
-	memset(&data->dma_rx.blk_cfg[0], 0, sizeof(data->dma_rx.blk_cfg[0]));
-	memset(&data->dma_rx.blk_cfg[1], 0, sizeof(data->dma_rx.blk_cfg[1]));
-	// Configure Ping-Pong DMA RX
-	data->dma_rx.blk_cfg[0].source_address = (uintptr_t)&(usart->RXDATA);
-	data->dma_rx.blk_cfg[0].dest_address = 0; /* dest not ready */
-	data->dma_rx.blk_cfg[0].source_addr_adj = DMA_ADDR_ADJ_NO_CHANGE;
-	data->dma_rx.blk_cfg[0].dest_addr_adj = DMA_ADDR_ADJ_INCREMENT;
-	data->dma_rx.blk_cfg[0].source_reload_en = 0;
-	data->dma_rx.blk_cfg[0].dest_reload_en = 0;
-	data->dma_rx.blk_cfg[0].fifo_mode_control = 0; // data->dma_rx.fifo_threshold;
-	data->dma_rx.blk_cfg[0].next_block = &data->dma_rx.blk_cfg[1];
-	memcpy(&data->dma_rx.blk_cfg[1],&data->dma_rx.blk_cfg[0], sizeof(data->dma_rx.blk_cfg[0]));
-	data->dma_rx.blk_cfg[1].next_block = &data->dma_rx.blk_cfg[0];
-
+	memset(&data->dma_rx.blk_cfg, 0, sizeof(data->dma_rx.blk_cfg));
+	data->dma_rx.blk_cfg.source_address = (uintptr_t)&(usart->RXDATA);
+	data->dma_rx.blk_cfg.dest_address = 0;
+	data->dma_rx.blk_cfg.source_addr_adj = DMA_ADDR_ADJ_NO_CHANGE;
+	data->dma_rx.blk_cfg.dest_addr_adj = DMA_ADDR_ADJ_INCREMENT;
 	data->dma_rx.dma_cfg.complete_callback_en = 1;
 	data->dma_rx.dma_cfg.channel_priority = 3;
-	data->dma_rx.dma_cfg.block_count = 2;
-	data->dma_rx.dma_cfg.head_block = &data->dma_rx.blk_cfg[0];
+	data->dma_rx.dma_cfg.head_block = &data->dma_rx.blk_cfg;
 	data->dma_rx.dma_cfg.user_data = (void *)dev;
 	data->rx_next_buffer = NULL;
 	data->rx_next_buffer_len = 0;
 
-	memset(&data->dma_tx.blk_cfg[0], 0, sizeof(data->dma_tx.blk_cfg[0]));
-	data->dma_tx.blk_cfg[0].dest_address = (uintptr_t)&(usart->TXDATA);
-	data->dma_tx.blk_cfg[0].source_address = 0; /* not ready */
-	data->dma_tx.blk_cfg[0].source_addr_adj = DMA_ADDR_ADJ_INCREMENT;
-	data->dma_tx.blk_cfg[0].dest_addr_adj = DMA_ADDR_ADJ_NO_CHANGE;
-	data->dma_tx.blk_cfg[0].fifo_mode_control = 0; // data->dma_tx.fifo_threshold;
+	memset(&data->dma_tx.blk_cfg, 0, sizeof(data->dma_tx.blk_cfg));
+	data->dma_tx.blk_cfg.dest_address = (uintptr_t)&(usart->TXDATA);
+	data->dma_tx.blk_cfg.source_address = 0;
+	data->dma_tx.blk_cfg.source_addr_adj = DMA_ADDR_ADJ_INCREMENT;
+	data->dma_tx.blk_cfg.dest_addr_adj = DMA_ADDR_ADJ_NO_CHANGE;
 	data->dma_tx.dma_cfg.complete_callback_en = 1;
-	data->dma_tx.dma_cfg.head_block = &data->dma_tx.blk_cfg[0];
+	data->dma_tx.dma_cfg.head_block = &data->dma_tx.blk_cfg;
 	data->dma_tx.dma_cfg.user_data = (void *)dev;
 
-	config->base->CMD = USART_CMD_CLEARRX |
-			    USART_CMD_CLEARTX; // really needed ? already cleared in USART_AsyncInit
+	config->base->CMD = USART_CMD_CLEARRX | USART_CMD_CLEARTX;
 	config->base->TIMECMP1 = USART_TIMECMP1_TSTOP_RXACT | USART_TIMECMP1_TSTART_RXEOF |
 				 USART_TIMECMP1_RESTARTEN | (0xff << _USART_TIMECMP1_TCMPVAL_SHIFT);
 	config->base->TIMECMP2 = USART_TIMECMP2_TSTOP_TXST | USART_TIMECMP2_TSTART_TXEOF |
@@ -760,25 +653,21 @@ static int uart_silabs_async_init(const struct device *dev)
 
 static void uart_silabs_isr(const struct device *dev)
 {
+	struct uart_silabs_data *data = dev->data;
+#ifdef CONFIG_UART_ASYNC_API
 	const struct uart_silabs_config *config = dev->config;
 	USART_TypeDef *usart = config->base;
-	struct uart_silabs_data *data = dev->data;
-	
+	struct dma_status stat;
+#endif
 #ifdef CONFIG_UART_INTERRUPT_DRIVEN
 	if (data->callback) {
 		data->callback(dev, data->cb_data);
 	}
 #endif /* CONFIG_UART_INTERRUPT_DRIVEN */
 #ifdef CONFIG_UART_ASYNC_API
-	struct dma_status stat;
-	// IT TIMCMP1 : Rx start receiving but no more receive til 255 baud time
 	if (usart->IF & USART_IF_TCMP1) {
-		LOG_DBG("TCMP1 interrupt occurred");
-		// uart_handle_rx_dma_timeout(uart_ctxt);
+		uart_silabs_dma_rx_flush(data);
 
-		uart_silabs_dma_rx_flush(dev);
-
-		// Pourquoi set ces registre de nouveau ?
 		usart->TIMECMP1 &= ~_USART_TIMECMP1_TSTART_MASK;
 		usart->TIMECMP1 |= USART_TIMECMP1_TSTART_RXEOF;
 
@@ -786,42 +675,38 @@ static void uart_silabs_isr(const struct device *dev)
 
 		return;
 	}
-	// Rx overflow
 	if (usart->IF & USART_IF_RXOF) {
 		LOG_DBG("Rx overflow interrupt occurred");
-		// uart_handle_rx_overflow(uart_ctxt);
+
+		// TODO: handle overflow error
 		USART_IntClear(usart, USART_IF_RXOF);
 		return;
 	}
-
-	// Tx Complete
 	if (usart->IF & USART_IF_TXC) {
-		LOG_DBG("Tc Complete interrupt occurred");
-
-		// disable TCMP2 because TX is either abort (by user or timeout) or complete
-		usart->TIMECMP2 &= ~_USART_TIMECMP2_TSTART_MASK;
-		usart->TIMECMP2 |= USART_TIMECMP2_TSTART_DISABLE;
-
-		async_evt_tx_done(data);
-
-		USART_IntDisable(config->base, USART_IF_TXC);
-		USART_IntDisable(config->base, USART_IF_TCMP2);
-		USART_IntClear(usart, USART_IF_TXC | USART_IF_TCMP2);
-	}
-	if (usart->IF & USART_IF_TCMP2) {
-		LOG_DBG("TCMP2 interrupt occurred");
-
-		// Si transfert completé
-		if (dma_get_status(data->dma_tx.dma_dev, data->dma_tx.dma_channel, &stat) == 0) {
-			size_t tx_snd_len = data->dma_tx.counter - stat.pending_length; // ????
-			if (tx_snd_len > data->dma_tx.offset) {
-				data->dma_tx.counter = tx_snd_len;
-				async_evt_tx_abort(data);
-			}
-		} else {
+		if (!dma_get_status(data->dma_tx.dma_dev, data->dma_tx.dma_channel, &stat)) {
+			data->dma_tx.counter = data->dma_tx.buffer_length - stat.pending_length;
 		}
 
-		// disable TCMP2 because TX is either abort (by user or timeout) or complete
+		if (data->dma_tx.counter == data->dma_tx.buffer_length) {
+
+			USART_IntDisable(config->base, USART_IF_TXC);
+			USART_IntDisable(config->base, USART_IF_TCMP2);
+			USART_IntClear(usart, USART_IF_TXC | USART_IF_TCMP2);
+
+			usart->TIMECMP2 &= ~_USART_TIMECMP2_TSTART_MASK;
+			usart->TIMECMP2 |= USART_TIMECMP2_TSTART_DISABLE;
+		}
+
+		async_evt_tx_done(data);
+	}
+	if (usart->IF & USART_IF_TCMP2) {
+
+		if (dma_get_status(data->dma_tx.dma_dev, data->dma_tx.dma_channel, &stat) == 0) {
+			size_t tx_snd_len = data->dma_tx.counter - stat.pending_length;
+			data->dma_tx.counter = tx_snd_len;
+			async_evt_tx_abort(data);
+		}
+
 		usart->TIMECMP2 &= ~_USART_TIMECMP2_TSTART_MASK;
 		usart->TIMECMP2 |= USART_TIMECMP2_TSTART_DISABLE;
 
@@ -832,11 +717,72 @@ static void uart_silabs_isr(const struct device *dev)
 		return;
 	}
 
-	// data flush RXNE ?
-
-	/* Clear errors */
 	uart_silabs_err_check(dev);
 #endif /* CONFIG_UART_ASYNC_API */
+}
+
+static inline USART_Parity_TypeDef uart_silabs_usart_cfg2ll_parity(
+	enum uart_config_parity parity)
+{
+	switch (parity) {
+	case UART_CFG_PARITY_ODD:
+		return usartOddParity;
+	case UART_CFG_PARITY_EVEN:
+		return usartEvenParity;
+	case UART_CFG_PARITY_NONE:
+	default:
+		return usartNoParity;
+	}
+}
+
+static inline USART_Stopbits_TypeDef uart_silabs_usart_cfg2ll_stopbits(
+	enum uart_config_stop_bits sb)
+{
+	switch (sb) {
+	case UART_CFG_STOP_BITS_0_5:
+		return usartStopbits0p5;
+	case UART_CFG_STOP_BITS_1:
+		return usartStopbits1;
+	case UART_CFG_STOP_BITS_2:
+		return usartStopbits2;
+	case UART_CFG_STOP_BITS_1_5:
+		return usartStopbits1p5;
+	default:
+		return usartStopbits1;
+	}
+}
+
+static inline USART_Databits_TypeDef uart_silabs_usart_cfg2ll_databits(
+	enum uart_config_data_bits db, enum uart_config_parity p)
+{
+	switch (db) {
+	case UART_CFG_DATA_BITS_7:
+		if (p == UART_CFG_PARITY_NONE) {
+			return usartDatabits7;
+		} else {
+			return usartDatabits8;
+		}
+	case UART_CFG_DATA_BITS_9:
+		return usartDatabits9;
+	case UART_CFG_DATA_BITS_8:
+	default:
+		if (p == UART_CFG_PARITY_NONE) {
+			return usartDatabits8;
+		} else {
+			return usartDatabits9;
+		}
+		return usartDatabits8;
+	}
+}
+
+static inline USART_HwFlowControl_TypeDef uart_silabs_usart_cfg2ll_hwctrl(
+	enum uart_config_flow_control fc)
+{
+	if (fc == UART_CFG_FLOW_CTRL_RTS_CTS) {
+		return usartHwFlowControlCtsAndRts;
+	}
+
+	return usartHwFlowControlNone;
 }
 
 /**
@@ -849,6 +795,8 @@ static int uart_silabs_init(const struct device *dev)
 {
 	int err;
 	const struct uart_silabs_config *config = dev->config;
+	struct uart_silabs_data *data = dev->data;
+	struct uart_config *uart_cfg = &data->uart_cfg;
 	USART_InitAsync_TypeDef usartInit = USART_INITASYNC_DEFAULT;
 
 	/* The peripheral and gpio clock are already enabled from soc and gpio driver */
@@ -864,10 +812,14 @@ static int uart_silabs_init(const struct device *dev)
 	}
 
 	/* Init USART */
-	usartInit.enable = usartDisable;
-	usartInit.baudrate = config->baud_rate;
+	usartInit.baudrate = uart_cfg->baudrate;
+	usartInit.parity = uart_silabs_usart_cfg2ll_parity(uart_cfg->parity);
+	usartInit.stopbits = uart_silabs_usart_cfg2ll_stopbits(uart_cfg->stop_bits);
+	usartInit.databits = uart_silabs_usart_cfg2ll_databits(uart_cfg->data_bits,
+								 uart_cfg->parity);
+	usartInit.hwFlowControl = uart_silabs_usart_cfg2ll_hwctrl(uart_cfg->flow_ctrl);
+
 	USART_InitAsync(config->base, &usartInit);
-	
 
 #ifdef CONFIG_UART_INTERRUPT_DRIVEN
 	config->irq_config_func(dev);
@@ -882,7 +834,60 @@ static int uart_silabs_init(const struct device *dev)
 #endif
 }
 
-// rajouter un if def sur pm device ? ou un is_define(?) dans la def du driver.
+#ifdef CONFIG_UART_USE_RUNTIME_CONFIGURE
+static int uart_silabs_configure(const struct device *dev,
+				const struct uart_config *cfg)
+{
+	const struct uart_silabs_config *config = dev->config;
+	struct uart_silabs_data *data = dev->data;
+	struct uart_config *uart_cfg = &data->uart_cfg;
+	USART_InitAsync_TypeDef usartInit = USART_INITASYNC_DEFAULT;
+
+#ifdef CONFIG_UART_ASYNC_API
+	if(data->dma_rx.enabled || data->dma_tx.enabled)
+	{
+		return -EBUSY;
+	}
+#endif
+
+	if ((cfg->parity == UART_CFG_PARITY_MARK) ||
+	    (cfg->parity == UART_CFG_PARITY_SPACE)) {
+		return -ENOTSUP;
+	}
+
+	if (cfg->flow_ctrl == UART_CFG_FLOW_CTRL_DTR_DSR || cfg->flow_ctrl == UART_CFG_FLOW_CTRL_RS485) {
+		return -ENOTSUP;
+	}
+
+	*uart_cfg = *cfg;
+
+	usartInit.baudrate = uart_cfg->baudrate;
+	usartInit.parity = uart_silabs_usart_cfg2ll_parity(uart_cfg->parity);
+	usartInit.stopbits = uart_silabs_usart_cfg2ll_stopbits(uart_cfg->stop_bits);
+	usartInit.databits = uart_silabs_usart_cfg2ll_databits(uart_cfg->data_bits,
+								 uart_cfg->parity);
+	usartInit.hwFlowControl = uart_silabs_usart_cfg2ll_hwctrl(uart_cfg->flow_ctrl);
+
+	USART_Enable(config->base, usartDisable);
+
+	USART_InitAsync(config->base, &usartInit);
+
+	USART_Enable(config->base, usartEnable);
+
+	return 0;
+};
+
+static int uart_silabs_config_get(const struct device *dev,
+				 struct uart_config *cfg)
+{
+	struct uart_silabs_data *data = dev->data;
+
+	*cfg = data->uart_cfg;
+
+	return 0;
+}
+#endif /* CONFIG_UART_USE_RUNTIME_CONFIGURE */
+
 #ifdef CONFIG_PM_DEVICE
 static int uart_silabs_pm_action(const struct device *dev, enum pm_device_action action)
 {
@@ -912,6 +917,10 @@ static DEVICE_API(uart, uart_silabs_driver_api) = {
 	.poll_in = uart_silabs_poll_in,
 	.poll_out = uart_silabs_poll_out,
 	.err_check = uart_silabs_err_check,
+#ifdef CONFIG_UART_USE_RUNTIME_CONFIGURE
+	.configure = uart_silabs_configure,
+	.config_get = uart_silabs_config_get,
+#endif
 #ifdef CONFIG_UART_INTERRUPT_DRIVEN
 	.fifo_fill = uart_silabs_fifo_fill,
 	.fifo_read = uart_silabs_fifo_read,
@@ -949,18 +958,13 @@ static DEVICE_API(uart, uart_silabs_driver_api) = {
 				.dma_slot = DT_INST_DMAS_CELL_BY_NAME(index, dir, slot),           \
 				.channel_direction =                                               \
 					DT_INST_DMAS_CELL_BY_NAME(index, dir, channel_config),     \
-				.channel_priority = 0,                                             \
 				.source_data_size = 1,                                             \
 				.dest_data_size = 1,                                               \
-				.source_burst_length = 1, /* SINGLE transfer */                    \
+				.source_burst_length = 1,                                          \
 				.dest_burst_length = 1,                                            \
-				.block_count = 1,                                                  \
 				.dma_callback = uart_silabs_dma_##dir##_cb,                        \
 			},                                                                         \
-		.src_addr_increment = 0,                                                           \
-		.dst_addr_increment = 0,                                                           \
 		.fifo_threshold = 0,                                                               \
-		.descr_cnt = 0,                                                                    \
 	}
 #else
 
@@ -1003,11 +1007,21 @@ static DEVICE_API(uart, uart_silabs_driver_api) = {
 	static const struct uart_silabs_config usart_silabs_cfg_##idx = {                          \
 		.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(idx),                                       \
 		.base = (USART_TypeDef *)DT_INST_REG_ADDR(idx),                                    \
-		GET_SILABS_USART_CLOCK(idx).baud_rate = DT_INST_PROP(idx, current_speed),          \
-		SILABS_USART_IRQ_HANDLER_FUNC(idx)};                                               \
+		GET_SILABS_USART_CLOCK(idx) SILABS_USART_IRQ_HANDLER_FUNC(idx)};                   \
                                                                                                    \
-	static struct uart_silabs_data usart_silabs_data_##idx = {UART_DMA_CHANNEL_INIT(idx, rx),  \
-								  UART_DMA_CHANNEL_INIT(idx, tx)}; \
+	static struct uart_silabs_data usart_silabs_data_##idx = {                                 \
+		.uart_cfg =                                                                        \
+			{                                                                          \
+				.baudrate = DT_INST_PROP(idx, current_speed),                      \
+				.parity = DT_INST_ENUM_IDX(idx, parity),                           \
+				.stop_bits = DT_INST_ENUM_IDX(idx, stop_bits),                     \
+				.data_bits = DT_INST_ENUM_IDX(idx, data_bits),                     \
+				.flow_ctrl = DT_INST_PROP(idx, hw_flow_control)                    \
+						     ? UART_CFG_FLOW_CTRL_RTS_CTS                  \
+						     : UART_CFG_FLOW_CTRL_NONE,                    \
+			},                                                                         \
+		UART_DMA_CHANNEL_INIT(idx, rx),                                                    \
+		UART_DMA_CHANNEL_INIT(idx, tx)};                                                   \
                                                                                                    \
 	DEVICE_DT_INST_DEFINE(idx, uart_silabs_init, PM_DEVICE_DT_INST_GET(idx),                   \
 			      &usart_silabs_data_##idx, &usart_silabs_cfg_##idx, PRE_KERNEL_1,     \

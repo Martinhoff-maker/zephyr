@@ -21,6 +21,11 @@
 
 LOG_MODULE_REGISTER(silabs_dma, CONFIG_DMA_LOG_LEVEL);
 
+#define DMA_SLOT_SOURCESEL_MASK 0xF8
+#define DMA_SLOT_SIGSEL_MASK 0x7
+#define DMA_SLOT_CONFIG_TO_LDMA_SIGNAL(slot) \
+	((slot & DMA_SLOT_SOURCESEL_MASK) << 13 | (slot & DMA_SLOT_SIGSEL_MASK))
+
 struct dma_silabs_channel {
 	enum dma_channel_direction dir;
 	uint32_t complete_callback_en;
@@ -104,8 +109,11 @@ static int dma_silabs_block_to_descriptor(struct dma_config *config,
 
 	memset(desc, 0, sizeof(*desc));
 
-	desc->xfer.structReq = 1;
-
+	if(config->channel_direction == MEMORY_TO_MEMORY)
+	{
+		desc->xfer.structReq = 1;
+	}
+	
 	if (config->source_data_size != config->dest_data_size) {
 		LOG_ERR("Source data size(%u) and destination data size(%u) must be equal",
 			config->source_data_size, config->dest_data_size);
@@ -118,10 +126,8 @@ static int dma_silabs_block_to_descriptor(struct dma_config *config,
 
 	src_size = config->source_data_size;
 	desc->xfer.size = LOG2(src_size);
-	if(block->block_size == 0){
-		// In case the descriptor in not already configured (like for uart)
-		xfer_count = 0;
-	} else if (block->block_size % config->source_data_size) {
+
+	if (block->block_size % config->source_data_size) {
 		xfer_count = block->block_size / config->source_data_size;
 	} else {
 		xfer_count = block->block_size / config->source_data_size - 1;
@@ -148,10 +154,13 @@ static int dma_silabs_block_to_descriptor(struct dma_config *config,
 	 * in the list (block for zephyr)
 	 */
 	desc->xfer.doneIfs = config->complete_callback_en;
-	desc->xfer.reqMode = ldmaCtrlReqModeBlock;
-	desc->xfer.ignoreSrec = 1;//block->flow_control_mode;
-	// desc->xfer.reqMode = ldmaCtrlReqModeAll;
-	// desc->xfer.ignoreSrec = block->flow_control_mode;
+	if(config->complete_callback_en)
+	{
+		desc->xfer.reqMode = ldmaCtrlReqModeBlock;
+	} else {
+		desc->xfer.reqMode = ldmaCtrlReqModeAll;
+	}
+	desc->xfer.ignoreSrec = block->flow_control_mode;
 
 	/* In silabs LDMA, increment sign is managed with the transfer configuration
 	 * which is common for all descs of the channel. Zephyr DMA API allows
@@ -340,7 +349,7 @@ static int dma_silabs_configure(const struct device *dev, uint32_t channel,
 		return -ENOTSUP;
 	}
 
-	//LDMA_StopTransfer(channel);
+	LDMA_StopTransfer(channel);
 
 	chan_conf->user_data = config->user_data;
 	chan_conf->cb = config->dma_callback;
@@ -353,10 +362,8 @@ static int dma_silabs_configure(const struct device *dev, uint32_t channel,
 	case MEMORY_TO_MEMORY:
 		break;
 	case PERIPHERAL_TO_MEMORY:
-			xfer_config->ldmaReqSel = 0x40000;
-		break;
 	case MEMORY_TO_PERIPHERAL:
-			xfer_config->ldmaReqSel = 0x40002;
+			xfer_config->ldmaReqSel = DMA_SLOT_CONFIG_TO_LDMA_SIGNAL(config->dma_slot);
 		break;
 	case PERIPHERAL_TO_PERIPHERAL:
 	case HOST_TO_MEMORY:
@@ -401,19 +408,12 @@ static int dma_silabs_configure(const struct device *dev, uint32_t channel,
 		break;
 	}
 
-	xfer_config->ldmaDbgHalt = 1;
-
 	ret = dma_silabs_configure_descriptor(config, data, chan_conf);
 	if (ret) {
 		return ret;
 	}
 
 	atomic_set_bit(data->dma_ctx.atomic, channel);
-
-	// CORE_ATOMIC_SECTION(
-    	// 	LDMA->IEN &= ~(1UL << (uint8_t)channel);
-    	// 	LDMA->CHDIS = 1UL << (uint8_t)channel;
-    	// )
 
 	return 0;
 }
@@ -429,10 +429,6 @@ static int dma_silabs_start(const struct device *dev, uint32_t channel)
 	}
 
 	atomic_inc(&chan->busy);
-
-	CORE_ATOMIC_SECTION(
-    		LDMA->REQCLEAR = 1UL << (uint8_t)channel;
-    	)
 
 	LDMA_StartTransfer(channel, &chan->xfer_config, chan->desc);
 
@@ -453,38 +449,6 @@ static int dma_silabs_stop(const struct device *dev, uint32_t channel)
 	atomic_clear(&chan->busy);
 
 	LDMA_IntClear(BIT(channel));
-
-	return 0;
-}
-
-static int dma_silabs_suspend(const struct device *dev, uint32_t channel)
-{
-	const struct dma_silabs_data *data = dev->data;
-	struct dma_silabs_channel *chan = &data->dma_chan_table[channel];
-
-	if (channel > data->dma_ctx.dma_channels) {
-		return -EINVAL;
-	}
-
-	LDMA_EnableChannelRequest(channel, false);
-
-	atomic_clear(&chan->busy);
-
-	return 0;
-}
-
-static int dma_silabs_resume(const struct device *dev, uint32_t channel)
-{
-	const struct dma_silabs_data *data = dev->data;
-	struct dma_silabs_channel *chan = &data->dma_chan_table[channel];
-
-	if (channel > data->dma_ctx.dma_channels) {
-		return -EINVAL;
-	}
-
-	LDMA_EnableChannelRequest(channel, true);
-
-	atomic_inc(&chan->busy);
 
 	return 0;
 }
@@ -533,10 +497,50 @@ static DEVICE_API(dma, dma_funcs) = {
 	.config = dma_silabs_configure,
 	.start = dma_silabs_start,
 	.stop = dma_silabs_stop,
-	.suspend = dma_silabs_suspend,
-	.resume = dma_silabs_resume,
 	.get_status = dma_silabs_get_status
 };
+
+int silabs_ldma_append_block(const struct device *dev, uint32_t channel,
+					struct dma_config *config)
+{
+	const struct dma_silabs_data *data = dev->data;
+	struct dma_silabs_channel *chan_conf = &data->dma_chan_table[channel];
+	struct dma_block_config *block_config = config->head_block;
+	LDMA_Descriptor_t *desc = data->dma_chan_table[channel].desc;
+	int ret;
+
+	if (channel > data->dma_ctx.dma_channels) {
+		return -EINVAL;
+	}
+
+	if (!atomic_test_bit(data->dma_ctx.atomic, channel)) {
+		return -EINVAL;
+	}
+
+	// DMA Channel already have loaded a descriptor with a linkaddr
+	// so we can't append a new block justa fter the current transfer
+	// This check is here to not use the function in a wrong way
+	if (desc->xfer.linkAddr) {
+		return -EINVAL;
+	}
+
+	ret = dma_silabs_block_to_descriptor(config, chan_conf, block_config, desc);
+	if (ret) {
+		return ret;
+	}
+
+	if (!LDMA_TransferDone(channel))
+	{
+		LDMA->CH[channel].LINK = ((uint32_t) desc & _LDMA_CH_LINK_LINKADDR_MASK) | 2;
+
+		if (LDMA_TransferDone(channel)){
+			LDMA_StartTransfer(channel, &chan_conf->xfer_config , desc);
+		}
+	} else {
+		LDMA_StartTransfer(channel, &chan_conf->xfer_config , desc);
+	}
+	return 0;
+}
 
 #define SILABS_DMA_IRQ_CONNECT(n, inst)                                                            \
 	IRQ_CONNECT(DT_INST_IRQ_BY_IDX(inst, n, irq), DT_INST_IRQ_BY_IDX(inst, n, priority),       \

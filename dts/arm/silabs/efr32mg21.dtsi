@@ -9,6 +9,7 @@
 #include <zephyr/dt-bindings/gpio/gpio.h>
 #include <zephyr/dt-bindings/i2c/i2c.h>
 #include <dt-bindings/clock/silabs/xg21-clock.h>
+#include <dt-bindings/dma/silabs_ldma.h>
 #include <freq.h>
 
 / {

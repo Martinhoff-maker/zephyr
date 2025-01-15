@@ -5,8 +5,8 @@
  */
 
 dut: &usart0 {
-	dmas = <&dma0 0 0x40002 1>,
-		<&dma0 1 0x40000 2>;
+	dmas = <&dma0 0 SILABS_LDMA_SIG_USART0_TXBL 1>,
+		<&dma0 1 SILABS_LDMA_SIG_USART0_RXDATAV 2>;
 	dma-names = "tx", "rx";
 	current-speed = <115200>;
 	status = "okay";
