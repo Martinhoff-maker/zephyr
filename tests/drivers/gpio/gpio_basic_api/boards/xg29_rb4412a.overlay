@@ -1,0 +1,13 @@
+/*
+ * Copyright (c) 2025 Silicon Laboratories Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/ {
+	resources {
+		compatible = "test-gpio-basic-api";
+		out-gpios = <&gpiob 0 0>; /* Expension Header PB0 */
+		in-gpios = <&gpioa 8 0>; /* Expension Header PA8 */
+	};
+};
