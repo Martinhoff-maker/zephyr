@@ -14,7 +14,4 @@ supported:
   - dma
   - watchdog
   - comparator
-testing:
-  ignore_tags:
-    - pm
 vendor: silabs
