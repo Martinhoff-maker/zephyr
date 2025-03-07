@@ -14,7 +14,8 @@ supported:
   - dma
   - watchdog
   - comparator
-testing:
-  ignore_tags:
-    - pm
+  - linker
+  - adc
+  - entropy
+  - flash
 vendor: silabs
