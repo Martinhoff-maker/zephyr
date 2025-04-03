@@ -61,3 +61,17 @@ zephyr_linker_sources(
   vt_pointer_section.ld
   )
 endif()
+
+if (CONFIG_SRAM_VECTOR_TABLE)
+if (CONFIG_CPU_CORTEX_M_HAS_VTOR)
+
+zephyr_linker_sources_ifdef(CONFIG_SRAM_VECTOR_TABLE
+  RAM_SECTIONS
+  # Maybe need to be changed in order to be placed at the beginning of RAM
+  # (conflict with code rellocation script)
+  SORT_KEY 0
+  ram_vector_table.ld
+)
+
+endif()
+endif()
