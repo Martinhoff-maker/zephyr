@@ -75,3 +75,8 @@ zephyr_linker_sources_ifdef(CONFIG_SRAM_VECTOR_TABLE
 
 endif()
 endif()
+
+if (CONFIG_SRAM_ISR_EXEC_CONTEXT)
+zephyr_code_relocate(FILES ${ZEPHYR_BASE}/arch/arm/core/cortex_m/isr_wrapper.c LOCATION RAM)
+zephyr_code_relocate(FILES ${ZEPHYR_BASE}/arch/arm/core/cortex_m/irq_init.c LOCATION RAM)
+endif()
