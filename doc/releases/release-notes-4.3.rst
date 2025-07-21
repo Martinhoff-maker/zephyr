@@ -65,6 +65,10 @@ New APIs and options
 
 .. zephyr-keep-sorted-start re(^\* \w)
 
+* Architectures
+
+  * :kconfig:option:`CONFIG_SRAM_SW_ISR_TABLE`
+
 .. zephyr-keep-sorted-stop
 
 New Boards
