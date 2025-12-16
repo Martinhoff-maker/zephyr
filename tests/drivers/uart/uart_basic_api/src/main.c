@@ -12,6 +12,7 @@
  */
 
 #include "test_uart.h"
+#include <zephyr/pm/device_runtime.h>
 
 #ifdef CONFIG_SHELL
 TC_CMD_DEFINE(test_uart_configure)
@@ -51,6 +52,7 @@ void *uart_basic_setup(void)
 	uint32_t dtr = 0;
 
 	dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
+
 	if (!device_is_ready(dev)) {
 		return NULL;
 	}
@@ -60,12 +62,21 @@ void *uart_basic_setup(void)
 		k_sleep(K_MSEC(100));
 	}
 #endif
+
+	(void)pm_device_runtime_get(DEVICE_DT_GET(DT_CHOSEN(zephyr_console)));
+
 	return NULL;
+}
+	
+void uart_basic_teardown(void *args)
+{
+	(void)args;
+	(void)pm_device_runtime_put(DEVICE_DT_GET(DT_CHOSEN(zephyr_console)));
 }
 
 #ifndef CONFIG_SHELL
-ZTEST_SUITE(uart_basic_api, NULL, uart_basic_setup, NULL, NULL, NULL);
+ZTEST_SUITE(uart_basic_api, NULL, uart_basic_setup, NULL, NULL, uart_basic_teardown);
 
 /* The UART pending test should be test finally. */
-ZTEST_SUITE(uart_basic_api_pending, NULL, uart_basic_setup, NULL, NULL, NULL);
+ZTEST_SUITE(uart_basic_api_pending, NULL, uart_basic_setup, NULL, NULL, uart_basic_teardown);
 #endif
