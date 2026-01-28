@@ -1,0 +1,17 @@
+# Copyright (c) 2025 Silicon Laboratories Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Generic fake GPIO controller for resource tracking.
+  This driver provides empty implementations of GPIO functions.
+
+compatible: "zephyr,gpio-fake"
+
+include: [gpio-controller.yaml, base.yaml]
+
+properties:
+  reg:
+    required: true
+
+  "#gpio-cells":
+    const: 0

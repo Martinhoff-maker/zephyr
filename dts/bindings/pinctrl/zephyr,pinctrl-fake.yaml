@@ -1,0 +1,30 @@
+# Copyright (c) 2025 Silicon Laboratories Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Generic fake pinctrl for resource tracking.
+  This driver provides empty implementations of pinctrl functions.
+
+compatible: "zephyr,pinctrl-fake"
+
+include: base.yaml
+
+child-binding:
+  description: |
+    Pin configuration. Each child node defines
+    the configuration for a particular group of pins.
+  child-binding:
+    description: |
+      Pin configuration group.
+    include:
+      - name: pincfg-node.yaml
+        property-allowlist: []
+
+    properties:
+      pinmux:
+        required: true
+        type: array
+        description: |
+          An array of pins sharing the same group properties. The pins should be
+          defined using the <peripheral>_<signal>_<pin> macros available from
+          the SoC DeviceTree files.

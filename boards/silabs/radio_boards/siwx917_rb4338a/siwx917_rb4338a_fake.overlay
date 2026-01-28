@@ -1,0 +1,73 @@
+/*
+ * Copyright (c) 2025 Silicon Laboratories Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Overlay pour utiliser les drivers fake (stub) pour le siwg917.
+ * Ce fichier permet de compiler sans les vrais drivers hardware.
+ */
+
+&clock0 {
+	compatible = "zephyr,clock-control-fake";
+};
+
+&pinctrl0 {
+	compatible = "zephyr,pinctrl-fake";
+};
+
+&egpio0 {
+	compatible = "zephyr,gpio-fake";
+	gpio-controller;
+	#gpio-cells = <0>;
+};
+
+&gpioa {
+	compatible = "zephyr,gpio-fake-port";
+	/delete-property/ silabs,pads;
+};
+
+&gpiob {
+	compatible = "zephyr,gpio-fake-port";
+	/delete-property/ silabs,pads;
+};
+
+&gpioc {
+	compatible = "zephyr,gpio-fake-port";
+	/delete-property/ silabs,pads;
+};
+
+&gpiod {
+	compatible = "zephyr,gpio-fake-port";
+	/delete-property/ silabs,pads;
+};
+
+/* GPIO fake - egpio1 et ses ports */
+&egpio1 {
+	compatible = "zephyr,gpio-fake";
+	gpio-controller;
+	#gpio-cells = <0>;
+	/delete-property/ silabs,ulp;
+};
+
+&ulpgpio {
+	compatible = "zephyr,gpio-fake-port";
+	/delete-property/ silabs,pads;
+};
+
+&uulpgpio {
+	compatible = "zephyr,gpio-fake-port";
+};
+
+&ulpdma {
+	compatible = "zephyr,dma-fake";
+	/delete-property/ silabs,sram-region;
+};
+
+&dma0 {
+	compatible = "zephyr,dma-fake";
+};
+
+&gpdma {
+	compatible = "zephyr,dma-fake-2cell";
+	/delete-property/ silabs,channel-reg-base;
+	/delete-property/ silabs,dma-channel-count;
+};

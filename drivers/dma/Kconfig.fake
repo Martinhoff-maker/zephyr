@@ -1,0 +1,11 @@
+# Copyright (c) 2025 Silicon Laboratories Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+config DMA_FAKE
+	bool "Generic DMA fake driver"
+	default y
+	depends on DT_HAS_ZEPHYR_DMA_FAKE_ENABLED || DT_HAS_ZEPHYR_DMA_FAKE_2CELL_ENABLED
+	help
+	  Enable generic stub for DMA driver.
+	  This provides empty implementations of DMA functions.
+	  Use compatible "zephyr,dma-fake" in DTS overlay.

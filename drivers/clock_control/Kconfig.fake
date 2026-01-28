@@ -1,0 +1,11 @@
+# Copyright (c) 2025 Silicon Laboratories Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+config CLOCK_CONTROL_FAKE
+	bool "Generic clock control fake driver"
+	default y
+	depends on DT_HAS_ZEPHYR_CLOCK_CONTROL_FAKE_ENABLED
+	help
+	  Enable generic fake clock control driver.
+	  This provides empty implementations of clock control functions
+	  Use compatible "zephyr,clock-control-fake" in DTS overlay.

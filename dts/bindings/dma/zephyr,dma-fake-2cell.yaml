@@ -1,0 +1,21 @@
+# Copyright (c) 2025 Silicon Laboratories Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Generic fake DMA controller for resource tracking.
+  This driver provides empty implementations of DMA functions.
+
+compatible: "zephyr,dma-fake-2cell"
+
+include: dma-controller.yaml
+
+properties:
+  reg:
+    required: true
+
+  "#dma-cells":
+    const: 2
+
+dma-cells:
+  - channel
+  - slot

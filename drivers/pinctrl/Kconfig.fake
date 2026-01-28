@@ -1,0 +1,11 @@
+# Copyright (c) 2025 Silicon Laboratories Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+config PINCTRL_FAKE
+	bool "Generic pinctrl fake driver"
+	default y
+	depends on DT_HAS_ZEPHYR_PINCTRL_FAKE_ENABLED
+	help
+	  Enable generic fake pinctrl driver.
+	  This provides empty implementations of pinctrl functions.
+	  Use compatible "zephyr,pinctrl-fake" in DTS overlay.
