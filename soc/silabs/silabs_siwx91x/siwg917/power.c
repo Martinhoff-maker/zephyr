@@ -9,7 +9,6 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/pm/pm.h>
 #include "sl_si91x_power_manager.h"
-#include "sli_si91x_clock_manager.h"
 #include "sli_siwx917_soc.h"
 #include "sl_rsi_utility.h"
 #include "sl_si91x_m4_ps.h"
@@ -17,6 +16,8 @@
 LOG_MODULE_REGISTER(soc_power, CONFIG_SOC_LOG_LEVEL);
 
 extern uint32_t frontend_switch_control;
+
+sl_status_t sli_si91x_config_clocks_to_mhz_rc(void);
 
 /*
  * Power state map:

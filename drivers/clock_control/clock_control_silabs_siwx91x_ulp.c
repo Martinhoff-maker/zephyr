@@ -156,8 +156,6 @@ static int siwx91x_ulp_clock_init(const struct device *dev)
 	  RSI_PS_PS2UpdateClockVariable();
 #endif
 
-	RSI_ULPSS_RefClkConfig(ULPSS_40MHZ_CLK);
-
 #if DT_NODE_HAS_STATUS(DT_NODELABEL(ulpi2c), okay)
 	siwx91x_ulp_clock_on(dev, (clock_control_subsys_t)SIWX91X_CLK_ULP_I2C);
 #endif

@@ -14,7 +14,6 @@
 #include "rsi_pll.h"
 #include "rsi_power_save.h"
 #include "rsi_rom_clks.h"
-#include "sl_si91x_clock_manager.h"
 
 #define XTAL_FREQUENCY     40000000
 #define INTF_PLL_FREQUENCY 160000000
@@ -181,13 +180,6 @@ static int siwx91x_hp_clock_init(const struct device *dev)
 #ifdef SL_SI91X_REQUIRES_INTF_PLL
   	M4CLK_Type *pCLK = M4CLK;
 #endif
-
-	/* Keep runtime behavior identical to existing stack. */
-	sl_si91x_clock_manager_m4_set_core_clk(M4_SOCPLLCLK,
-					       DT_PROP(DT_PATH(cpus, cpu_0), clock_frequency));
-	sl_si91x_clock_manager_set_pll_freq(INFT_PLL, INTF_PLL_FREQUENCY, PLL_REF_CLK_VAL_XTAL);
-	
-	RSI_CLK_QspiClkConfig(M4CLK, QSPI_INTFPLLCLK, 0, 0, 1);
 
 #if DT_NODE_HAS_STATUS(DT_NODELABEL(i2c0), okay)
 	siwx91x_hp_clock_on(dev, (clock_control_subsys_t)SIWX91X_CLK_I2C0);
