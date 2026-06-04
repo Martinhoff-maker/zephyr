@@ -29,7 +29,7 @@ static int siwx91x_ulp_clock_on(const struct device *dev, clock_control_subsys_t
 	case SIWX91X_CLK_ULP_UART:
 		RSI_PS_UlpssPeriPowerUp(ULPSS_PWRGATE_ULP_UART);
 		RSI_ULPSS_UlpUartClkConfig(ULPCLK, ENABLE_STATIC_CLK,
-					   false, ULP_UART_ULP_MHZ_RC_CLK, 1);
+					   false, ULP_UART_REF_CLK, 1);
 		break;
 	case SIWX91X_CLK_ULP_I2C:
 		RSI_PS_UlpssPeriPowerUp(ULPSS_PWRGATE_ULP_I2C);
@@ -101,7 +101,7 @@ static int siwx91x_ulp_clock_get_rate(const struct device *dev, clock_control_su
 
 	switch (clockid) {
 	case SIWX91X_CLK_ULP_UART:
-		*rate = RSI_CLK_GetBaseClock(ULPSS_UART);
+		*rate = DEFAULT_40MHZ_CLOCK;
 		return 0;
 	default:
 		return -EINVAL;
@@ -119,12 +119,12 @@ static int siwx91x_ulp_clock_set_rate(const struct device *dev, clock_control_su
 
 	switch (clockid) {
 	case SIWX91X_CLK_ULP_I2S:
-		ret = RSI_ULPSS_UlpI2sClkConfig(ULPCLK,
-						ULPCLK->ULP_I2S_CLK_GEN_REG_b.ULP_I2S_CLK_SEL_b,
-						RSI_CLK_GetBaseClock(ULPSS_I2S) * 2 / rate);
-		if (ret) {
-			return -EIO;
-		}
+		// ret = RSI_ULPSS_UlpI2sClkConfig(ULPCLK,
+		// 				ULPCLK->ULP_I2S_CLK_GEN_REG_b.ULP_I2S_CLK_SEL_b,
+		// 				RSI_CLK_GetBaseClock(ULPSS_I2S) * 2 / rate);
+		// if (ret) {
+		// 	return -EIO;
+		// }
 		return 0;
 	default:
 		return -EINVAL;

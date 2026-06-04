@@ -105,23 +105,15 @@ static int siwx91x_hp_ref_clk_config(HP_REF_CLK_T clkSource)
 	switch (clkSource) {
 	case HP_REF_CLK_DISABLED:
 		MCU_FSM->MCU_FSM_REF_CLK_REG_b.M4SS_REF_CLK_SEL = clkSource;
-		system_clocks.m4_ref_clock_source = clkSource;
-		system_clocks.m4ss_ref_clk = 0;
 		break;
 	case HP_REF_ULP_MHZ_RC_BYP_CLK:
 		MCU_FSM->MCU_FSM_REF_CLK_REG_b.M4SS_REF_CLK_SEL = clkSource;
-		system_clocks.m4_ref_clock_source = clkSource;
-		system_clocks.m4ss_ref_clk = system_clocks.byp_rc_ref_clock;
 		break;
 	case HP_REF_ULP_MHZ_RC_CLK:
 		MCU_FSM->MCU_FSM_REF_CLK_REG_b.M4SS_REF_CLK_SEL = clkSource;
-		system_clocks.m4_ref_clock_source = clkSource;
-		system_clocks.m4ss_ref_clk = system_clocks.rc_mhz_clock;
 		break;
 	case HP_REF_EXT_40MHZ_CLK:
 		MCU_FSM->MCU_FSM_REF_CLK_REG_b.M4SS_REF_CLK_SEL = clkSource;
-		system_clocks.m4_ref_clock_source = clkSource;
-		system_clocks.m4ss_ref_clk = system_clocks.rf_ref_clock;
 		break;
 	default:
 		return -EINVAL;
@@ -141,23 +133,15 @@ static int siwx91x_ulp_ref_clk_config(ULP_REF_CLK_T clkSource)
 	switch (clkSource) {
 	case ULP_REF_CLK_DISABLED:
 		MCU_FSM->MCU_FSM_REF_CLK_REG_b.ULPSS_REF_CLK_SEL_b = clkSource;
-		system_clocks.ulp_ref_clock_source = clkSource;
-		system_clocks.ulpss_ref_clk = 0;
 		break;
 	case ULP_REF_ULP_MHZ_RC_BYP_CLK:
 		MCU_FSM->MCU_FSM_REF_CLK_REG_b.ULPSS_REF_CLK_SEL_b = clkSource;
-		system_clocks.ulp_ref_clock_source = clkSource;
-		system_clocks.ulpss_ref_clk = system_clocks.byp_rc_ref_clock;
 		break;
 	case ULP_REF_ULP_MHZ_RC_CLK:
 		MCU_FSM->MCU_FSM_REF_CLK_REG_b.ULPSS_REF_CLK_SEL_b = clkSource;
-		system_clocks.ulp_ref_clock_source = clkSource;
-		system_clocks.ulpss_ref_clk = system_clocks.rc_mhz_clock;
 		break;
 	case ULP_REF_EXT_40MHZ_CLK:
 		MCU_FSM->MCU_FSM_REF_CLK_REG_b.ULPSS_REF_CLK_SEL_b = clkSource;
-		system_clocks.ulp_ref_clock_source = clkSource;
-		system_clocks.ulpss_ref_clk = system_clocks.rf_ref_clock;
 		break;
 	default:
 		return -EINVAL;
@@ -217,7 +201,6 @@ static int siwx91x_m4_soc_clk_config(M4_SOC_CLK_T clkSource, uint32_t divFactor)
 
 	case M4_ULP_REF_CLK:
 		M4CLK->CLK_CONFIG_REG5_b.M4_SOC_CLK_SEL = clkSource;
-		SystemCoreClock = system_clocks.m4ss_ref_clk;
 		break;
 
 	case M4_SOC_PLL_CLK:
@@ -225,7 +208,6 @@ static int siwx91x_m4_soc_clk_config(M4_SOC_CLK_T clkSource, uint32_t divFactor)
 			return -EINVAL;
 		}
 		M4CLK->CLK_CONFIG_REG5_b.M4_SOC_CLK_SEL = clkSource;
-		SystemCoreClock = system_clocks.soc_pll_clock;
 		break;
 
 	case M4_MODEM_PLL_CLK1:
@@ -233,7 +215,6 @@ static int siwx91x_m4_soc_clk_config(M4_SOC_CLK_T clkSource, uint32_t divFactor)
 			return -EINVAL;
 		}
 		M4CLK->CLK_CONFIG_REG5_b.M4_SOC_CLK_SEL = clkSource;
-		SystemCoreClock = system_clocks.modem_pll_clock;
 		break;
 
 	case M4_INTF_PLL_CLK:
@@ -241,7 +222,6 @@ static int siwx91x_m4_soc_clk_config(M4_SOC_CLK_T clkSource, uint32_t divFactor)
 			return -EINVAL;
 		}
 		M4CLK->CLK_CONFIG_REG5_b.M4_SOC_CLK_SEL = clkSource;
-		SystemCoreClock = system_clocks.intf_pll_clock;
 		break;
 
 	case M4_SLEEP_CLK:
@@ -252,7 +232,6 @@ static int siwx91x_m4_soc_clk_config(M4_SOC_CLK_T clkSource, uint32_t divFactor)
 		} else {
 			return -EINVAL;
 		}
-		SystemCoreClock = system_clocks.sleep_clock;
 		break;
 	default:
 		return -EINVAL;
@@ -264,12 +243,6 @@ static int siwx91x_m4_soc_clk_config(M4_SOC_CLK_T clkSource, uint32_t divFactor)
 
 	/* update the division factor */
 	M4CLK->CLK_CONFIG_REG5_b.M4_SOC_CLK_DIV_FAC = (unsigned int)(divFactor & 0x3F);
-
-	if (divFactor) {
-		SystemCoreClock /= divFactor;
-	}
-
-	system_clocks.soc_clock = SystemCoreClock;
 
 	return 0;
 }
@@ -292,8 +265,6 @@ static int siwx91x_hp_set_pll_freq(PLL_CLK_T pll_clk, uint32_t pll_freq, PLL_REF
 		// Configure SOC-PLL lock settings before configuring SOC PLL clock
 		RSI_CLK_SocPllLockConfig(MANUAL_LOCK, BYPASS_MANUAL_LOCK, SOC_PLL_MM_COUNT_LIMIT);
 
-		system_clocks.soc_pll_clock = pll_freq;
-
 		/* Turn ON the SOC_PLL */
 		RSI_CLK_SocPllTurnOn();
 
@@ -311,8 +282,6 @@ static int siwx91x_hp_set_pll_freq(PLL_CLK_T pll_clk, uint32_t pll_freq, PLL_REF
 		break;
 
 	case INTF_PLL_CLK:
-		system_clocks.intf_pll_clock = pll_freq;
-
 		/* TurnON the INTF_PLL */
 		RSI_CLK_IntfPLLTurnOn();
 
@@ -330,7 +299,6 @@ static int siwx91x_hp_set_pll_freq(PLL_CLK_T pll_clk, uint32_t pll_freq, PLL_REF
 		break;
 
 	case I2S_PLL_CLK:
-		system_clocks.i2s_pll_clock = pll_freq;
 		/* TurnON the I2S_PLL */
 		RSI_CLK_I2sPllTurnOn();
 
@@ -526,7 +494,7 @@ sl_status_t sli_si91x_clock_manager_config_clks_on_ps_change(sl_power_state_t po
 		// Sets FSM HF frequency to 20MHz
 		RSI_PS_FsmHfFreqConfig(20);
 		// Updated the clock global variables
-		RSI_PS_PS2UpdateClockVariable();
+		//RSI_PS_PS2UpdateClockVariable();
 
 		// The remaining clock configurations are common for PS2 and Sleep states
 		sli_status = config_sleep_clks();
@@ -641,19 +609,13 @@ static int siwx91x_aon_clock_init(const struct device *dev)
 	ARG_UNUSED(dev);
 	int ret;
 
-	/*Updated the default SOC clock frequency - tend to be deleted */
-	SystemCoreClock = DEFAULT_40MHZ_CLOCK;
-
 	/*Initialize IPMU and MCU FSM blocks - Legacy Link*/
 	RSI_Ipmu_Init();
 
 	/* AON */
 	/*Configuring the ULP reference clock to 40MHz, as this frequency is required by the
 	 * temperature sensor for chip supply mode configuration.*/
-	system_clocks.rf_ref_clock = DEFAULT_40MHZ_CLOCK;
 	MCU_FSM->MCU_FSM_REF_CLK_REG_b.ULPSS_REF_CLK_SEL_b = ULPSS_40MHZ_CLK;
-	system_clocks.ulp_ref_clock_source = ULPSS_40MHZ_CLK;
-	system_clocks.ulpss_ref_clk = system_clocks.rf_ref_clock;
 
 	/* maybe after sys init ?*/
 	/* IPMU mode configuration based on temperature - Legacy */
@@ -692,25 +654,6 @@ static int siwx91x_aon_clock_init(const struct device *dev)
 	/* Before NWP is going to power save mode ,set m4ss_ref_clk_mux_ctrl ,
 	tass_ref_clk_mux_ctrl, AON domain power supply controls from NWP to M4 */
 	RSI_Set_Cntrls_To_M4();
-
-	/*Update the system clock sources with source generating frequency*/
-	system_clocks.m4ss_ref_clk = DEFAULT_40MHZ_CLOCK;
-	system_clocks.ulpss_ref_clk = DEFAULT_40MHZ_CLOCK;
-	system_clocks.soc_pll_clock = DEFAULT_SOC_PLL_CLOCK;
-	system_clocks.modem_pll_clock = DEFAULT_MODEM_PLL_CLOCK;
-	system_clocks.modem_pll_clock2 = DEFAULT_MODEM_PLL_CLOCK;
-	system_clocks.intf_pll_clock = DEFAULT_INTF_PLL_CLOCK;
-	system_clocks.soc_clock = DEFAULT_40MHZ_CLOCK;
-	system_clocks.rc_32khz_clock = DEFAULT_32KHZ_RC_CLOCK;
-	system_clocks.rc_mhz_clock = DEFAULT_MHZ_RC_CLOCK;
-	system_clocks.ro_20mhz_clock = DEFAULT_20MHZ_RO_CLOCK;
-	system_clocks.ro_32khz_clock = DEFAULT_32KHZ_RO_CLOCK;
-	system_clocks.xtal_32khz_clock = DEFAULT_32KHZ_XTAL_CLOCK;
-	system_clocks.doubler_clock = DEFAULT_DOUBLER_CLOCK;
-	system_clocks.rf_ref_clock = DEFAULT_40MHZ_CLOCK;
-	system_clocks.mems_ref_clock = DEFAULT_MEMS_REF_CLOCK;
-	system_clocks.byp_rc_ref_clock = DEFAULT_MHZ_RC_CLOCK;
-	system_clocks.i2s_pll_clock = DEFAULT_I2S_PLL_CLOCK;
 
 	// need to properly check if the xtal is used in the dt.
 	bool xtal_is_used = true;

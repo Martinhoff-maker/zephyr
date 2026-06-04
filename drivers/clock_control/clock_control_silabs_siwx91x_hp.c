@@ -127,10 +127,10 @@ static int siwx91x_hp_clock_get_rate(const struct device *dev, clock_control_sub
 
 	switch (clockid) {
 	case SIWX91X_CLK_UART0:
-		*rate = RSI_CLK_GetBaseClock(M4_USART0);
+		//*rate = RSI_CLK_GetBaseClock(M4_USART0);
 		return 0;
 	case SIWX91X_CLK_UART1:
-		*rate = RSI_CLK_GetBaseClock(M4_UART1);
+		//*rate = RSI_CLK_GetBaseClock(M4_UART1);
 		return 0;
 	case SIWX91X_CLK_PWM:
 		*rate = DT_PROP(DT_PATH(cpus, cpu_0), clock_frequency);
@@ -153,8 +153,8 @@ static int siwx91x_hp_clock_set_rate(const struct device *dev, clock_control_sub
 
 	switch (clockid) {
 	case SIWX91X_CLK_I2S0:
-		RSI_CLK_SetI2sPllFreq(M4CLK, rate, XTAL_FREQUENCY);
-		RSI_CLK_I2sClkConfig(M4CLK, I2S_PLLCLK, 0);
+		//RSI_CLK_SetI2sPllFreq(M4CLK, rate, XTAL_FREQUENCY);
+		//RSI_CLK_I2sClkConfig(M4CLK, I2S_PLLCLK, 0);
 		return 0;
 	default:
 		return -EINVAL;
