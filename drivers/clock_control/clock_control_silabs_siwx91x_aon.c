@@ -33,9 +33,10 @@
 #define BYPASS_MANUAL_LOCK     1    // Bypass manual lock enable
 #define SOC_PLL_MM_COUNT_LIMIT 0xA4 // Soc pll count limit
 
-#define QSPI_DIV_FACTOR 1
-#define QSPI_ODD_DIV_EN 0 // Odd division enable for QSPI clock
-#define QSPI_SWALLO_EN  0 // Swallo enable for QSPI clock
+#define QSPI_DIV_FACTOR  1
+#define QSPI_ODD_DIV_EN  0 // Odd division enable for QSPI clock
+#define QSPI_SWALLO_EN   0 // Swallo enable for QSPI clock
+#define QSPI2_DIV_FACTOR 1 // Division factor for QSPI2 clock
 
 #define PS4_PERFORMANCE_MODE_SOC_FREQ  (180000000UL) // PS4 high power soc pll clock frequency
 #define PS4_PERFORMANCE_MODE_INTF_FREQ (160000000UL) // PS4 high power intf pll clock frequency
@@ -294,7 +295,7 @@ static int siwx91x_hp_set_pll_freq(PLL_CLK_T pll_clk, uint32_t pll_freq, PLL_REF
 		system_clocks.soc_pll_clock = pll_freq;
 
 		/* Turn ON the SOC_PLL */
-		clk_soc_pll_turn_on();
+		RSI_CLK_SocPllTurnOn();
 
 		if (pll_ref_clk == PLL_REF_CLK_XTAL) {
 			siwx91x_aon_clock_request_xtal_to_nwp();
@@ -346,13 +347,6 @@ static int siwx91x_hp_set_pll_freq(PLL_CLK_T pll_clk, uint32_t pll_freq, PLL_REF
 		break;
 	}
 
-	if ((pll_freq >= 90000000) && (!(BATT_FF->MCU_PMU_LDO_CTRL_CLEAR & MCU_SOC_LDO_LVL))) {
-		/* Change the power state from PS3 to PS4 */
-		RSI_PS_SetDcDcToHigerVoltage();
-		/* Configure DCDC to give higher output voltage.*/
-		RSI_PS_PowerStateChangePs3toPs4();
-	}
-
 	return ret;
 }
 
@@ -402,202 +396,164 @@ static int siwx91x_hp_set_m4_core_clk(M4_SOC_CLK_T clk_source, uint32_t pll_freq
  ******************************************************************************/
 int config_sleep_clks(void)
 {
-  int ret = 0;
+	int ret = 0;
 
-  // Change ref clocks to RC clock before moving to PS2/Sleep and not requested from PS2
-  if (sl_si91x_power_manager_get_current_state() != SL_SI91X_POWER_MANAGER_PS2) {
-    // Change Subsystems' ref clocks from 40MHz XTAL to MHz RC
-    RSI_CLK_M4ssRefClkConfig(M4CLK, ULP_MHZ_RC_CLK);
-    RSI_ULPSS_RefClkConfig(ULPSS_ULP_MHZ_RC_CLK);
+	// Change ref clocks to RC clock before moving to PS2/Sleep and not requested from PS2
+	if (sl_si91x_power_manager_get_current_state() != SL_SI91X_POWER_MANAGER_PS2) {
+		// Change Subsystems' ref clocks from 40MHz XTAL to MHz RC
+		siwx91x_hp_ref_clk_config(HP_REF_ULP_MHZ_RC_CLK);
+		siwx91x_ulp_ref_clk_config(ULP_REF_ULP_MHZ_RC_CLK);
 
-    // Configure M4 source to ULP REF clock
-    ret = siwx91x_hp_set_m4_core_clk(M4_ULP_REF_CLK, 0);
-    if (ret != 0) {
-      return ret;
-    }
+		// Configure M4 source to ULP REF clock
+		ret = siwx91x_hp_set_m4_core_clk(M4_ULP_REF_CLK, 0);
+		if (ret != 0) {
+			return ret;
+		}
 
-    // Configure QSPI clock with ULPREF as input source
-#if defined(CLOCK_ROMDRIVER_PRESENT)
-    ROMAPI_M4SS_CLK_API->clk_qspi_clk_config(M4CLK, QSPI_ULPREFCLK, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN, QSPI_DIV_FACTOR);
-#endif
+		RSI_CLK_QspiClkConfig(M4CLK, QSPI_ULPREFCLK, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN,
+				    QSPI_DIV_FACTOR);
 
-    // Configure QSPI2 clock with ULPREF as input source
-#ifdef SLI_SI91X_MCU_ENABLE_PSRAM_FEATURE
-/* Configuring clock for PSRAM operation based on selected configs */
-#if defined(CLOCK_ROMDRIVER_PRESENT)
-    ROMAPI_M4SS_CLK_API->clk_qspi_2_clk_config(M4CLK, QSPI_ULPREFCLK, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN, QSPI_DIV_FACTOR);
-#endif
-#endif
-  }
+		RSI_CLK_Qspi2ClkConfig(M4CLK, QSPI_ULPREFCLK, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN,
+				      QSPI_DIV_FACTOR);
+	}
 
-  return ret;
+	return ret;
 }
 
 int sli_si91x_config_clocks_to_mhz_rc(void)
 {
-  sl_status_t sli_status = SL_STATUS_OK;
-  if (!(M4_ULP_SLP_STATUS_REG & ULP_MODE_SWITCHED_NPSS)) {
-    // Change Subsystems' ref clocks from 40MHz XTAL to MHz RC
-    MCU_FSM->MCU_FSM_REF_CLK_REG_b.M4SS_REF_CLK_SEL    = ULP_MHZ_RC_CLK;
-    MCU_FSM->MCU_FSM_REF_CLK_REG_b.ULPSS_REF_CLK_SEL_b = ULPSS_ULP_MHZ_RC_CLK;
-    /*wait for clock switched*/
-    while ((M4CLK->PLL_STAT_REG_b.ULP_REF_CLK_SWITCHED) != true)
-      ;
-    // Configure M4 source to ULP REF clock
-    M4CLK->CLK_CONFIG_REG5_b.M4_SOC_CLK_SEL = M4_ULPREFCLK;
+	if (!(M4_ULP_SLP_STATUS_REG & ULP_MODE_SWITCHED_NPSS)) {
+		// Change Subsystems' ref clocks from 40MHz XTAL to MHz RC
+		MCU_FSM->MCU_FSM_REF_CLK_REG_b.M4SS_REF_CLK_SEL = ULP_MHZ_RC_CLK;
+		MCU_FSM->MCU_FSM_REF_CLK_REG_b.ULPSS_REF_CLK_SEL_b = ULPSS_ULP_MHZ_RC_CLK;
+		/*wait for clock switched*/
+		while ((M4CLK->PLL_STAT_REG_b.ULP_REF_CLK_SWITCHED) != true)
+			;
+		// Configure M4 source to ULP REF clock
+		M4CLK->CLK_CONFIG_REG5_b.M4_SOC_CLK_SEL = M4_ULPREFCLK;
 
-    // Configure QSPI clock with ULPREF as input source
-#if defined(CLOCK_ROMDRIVER_PRESENT)
-    sli_status =
-      ROMAPI_M4SS_CLK_API->clk_qspi_clk_config(M4CLK, QSPI_ULPREFCLK, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN, QSPI_DIV_FACTOR);
-#endif
+		clk_qspi_clk_config(M4CLK, QSPI_ULPREFCLK, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN,
+				    QSPI_DIV_FACTOR);
 
-    // Configure QSPI2 clock with ULPREF as input source
-#ifdef SLI_SI91X_MCU_ENABLE_PSRAM_FEATURE
-/* Configuring clock for PSRAM operation based on selected configs */
-#if defined(CLOCK_ROMDRIVER_PRESENT)
-    ROMAPI_M4SS_CLK_API->clk_qspi_2_clk_config(M4CLK, QSPI_ULPREFCLK, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN, QSPI_DIV_FACTOR);
-#endif
-#endif
-  }
-  return 0;
+		clk_qspi_2_clk_config(M4CLK, QSPI_ULPREFCLK, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN,
+				      QSPI_DIV_FACTOR);
+	}
+	return 0;
 }
 
-sl_status_t sli_si91x_clock_manager_config_clks_on_ps_change(sl_power_state_t power_state, boolean_t power_mode)
+sl_status_t sli_si91x_clock_manager_config_clks_on_ps_change(sl_power_state_t power_state,
+							     boolean_t power_mode)
 {
-  sl_status_t sli_status = SL_STATUS_OK;
-  uint32_t soc_pll_freq;
-  QSPI_CLK_SRC_SEL_T qspi_clk_source = QSPI_ULPREFCLK;
-  uint8_t qspi_div_fac               = QSPI_DIV_FACTOR;
-  uint32_t intf_pll_freq;
+	sl_status_t sli_status = SL_STATUS_OK;
+	uint32_t soc_pll_freq;
+	QSPI_CLK_SRC_SEL_T qspi_clk_source = QSPI_ULPREFCLK;
+	uint8_t qspi_div_fac = QSPI_DIV_FACTOR;
+	uint32_t intf_pll_freq;
 
-  switch (power_state) {
-    case SL_SI91X_POWER_MANAGER_PS4:
-      /* Configure Ref clocks to 40MHz crystal */
-      RSI_CLK_M4ssRefClkConfig(M4CLK, EXT_40MHZ_CLK);
-      RSI_ULPSS_RefClkConfig(ULPSS_40MHZ_CLK);
-      qspi_div_fac = 1;
-      // Set SOC PLL and configure M4 source to SOC PLL based on current state and mode
-      soc_pll_freq = power_mode ? PS4_PERFORMANCE_MODE_SOC_FREQ : PS4_POWERSAVE_MODE_FREQ;
-      sli_status   = siwx91x_hp_set_m4_core_clk(M4_SOC_PLL_CLK, soc_pll_freq);
-      if (sli_status != SL_STATUS_OK) {
-        break;
-      }
+	switch (power_state) {
+	case SL_SI91X_POWER_MANAGER_PS4:
+		/* Configure Ref clocks to 40MHz crystal */
+		siwx91x_aon_clock_request_xtal_to_nwp();
+		siwx91x_hp_ref_clk_config(HP_REF_EXT_40MHZ_CLK);
+		siwx91x_ulp_ref_clk_config(ULP_REF_EXT_40MHZ_CLK);
 
-      // Set INTF PLL based on current state and mode
-      intf_pll_freq = power_mode ? PS4_PERFORMANCE_MODE_INTF_FREQ : PS4_POWERSAVE_MODE_FREQ;
+		// Set SOC PLL and configure M4 source to SOC PLL based on current state and mode
+		soc_pll_freq = power_mode ? PS4_PERFORMANCE_MODE_SOC_FREQ : PS4_POWERSAVE_MODE_FREQ;
 
-      sli_status = siwx91x_hp_set_pll_freq(INTF_PLL_CLK, intf_pll_freq, PLL_REF_CLK_XTAL);
-      if (sli_status != SL_STATUS_OK) {
-        break;
-      }
-      if (intf_pll_freq == PS4_PERFORMANCE_MODE_INTF_FREQ) {
-        qspi_clk_source = QSPI_INTFPLLCLK;
-      } else {
-        qspi_clk_source = QSPI_ULPREFCLK;
-      }
+		siwx91x_hp_set_m4_core_clk(M4_SOC_PLL_CLK, soc_pll_freq);
 
-      // Configure QSPI clock with INTF PLL as input source
-#if defined(CLOCK_ROMDRIVER_PRESENT)
-      ROMAPI_M4SS_CLK_API->clk_qspi_clk_config(M4CLK, qspi_clk_source, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN, qspi_div_fac);
-#endif
+		intf_pll_freq =
+			power_mode ? PS4_PERFORMANCE_MODE_INTF_FREQ : PS4_POWERSAVE_MODE_FREQ;
 
-      // Configure QSPI2 clock with INTF PLL as input source
-#ifdef SLI_SI91X_MCU_ENABLE_PSRAM_FEATURE
-      rsi_d_cache_invalidate_all();
-/* Configuring clock for PSRAM operation based on selected configs */
-#if defined(CLOCK_ROMDRIVER_PRESENT)
-      ROMAPI_M4SS_CLK_API->clk_qspi_2_clk_config(M4CLK, qspi_clk_source, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN, qspi_div_fac);
-#endif
-#endif
-      break;
+		siwx91x_hp_set_pll_freq(INTF_PLL_CLK, intf_pll_freq, PLL_REF_CLK_XTAL);
 
-    case SL_SI91X_POWER_MANAGER_PS3:
-      /* Configure Ref clocks to 40MHz crystal */
-      RSI_CLK_M4ssRefClkConfig(M4CLK, EXT_40MHZ_CLK);
-      RSI_ULPSS_RefClkConfig(ULPSS_40MHZ_CLK);
-      qspi_div_fac = 2;
+		if (intf_pll_freq == PS4_PERFORMANCE_MODE_INTF_FREQ) {
+			qspi_clk_source = QSPI_INTFPLLCLK;
+		} else {
+			qspi_clk_source = QSPI_ULPREFCLK;
+		}
 
-      // configure M4 source frequency based on current state and mode
-      soc_pll_freq = power_mode ? PS3_PERFORMANCE_MODE_FREQ : PS3_POWERSAVE_MODE_FREQ;
-      if (power_mode) {
-        // configure M4 source to SOC PLL
-        sli_status = siwx91x_hp_set_m4_core_clk(M4_SOC_PLL_CLK, soc_pll_freq);
-      } else {
-        // Configure M4 source to ULP REF clock
-        sli_status = siwx91x_hp_set_m4_core_clk(M4_ULP_REF_CLK, 0);
-        siwx91x_hp_set_pll_freq(SOC_PLL_CLK, soc_pll_freq, PLL_REF_CLK_XTAL);
-      }
-      if (sli_status != SL_STATUS_OK) {
-        break;
-      }
+		clk_qspi_clk_config(M4CLK, qspi_clk_source, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN,
+				    qspi_div_fac);
 
-      // Set INTF PLL based on current state and mode
-      intf_pll_freq = power_mode ? PS3_PERFORMANCE_MODE_FREQ : PS3_POWERSAVE_MODE_FREQ;
-      sli_status    = siwx91x_hp_set_pll_freq(INTF_PLL_CLK, intf_pll_freq, PLL_REF_CLK_XTAL);
-      if (sli_status != SL_STATUS_OK) {
-        break;
-      }
-      if (intf_pll_freq == PS3_PERFORMANCE_MODE_FREQ) {
-        qspi_clk_source = QSPI_INTFPLLCLK;
-        qspi_div_fac    = 1;
-      } else {
-        qspi_clk_source = QSPI_ULPREFCLK;
-        qspi_div_fac    = 2;
-      }
+		clk_qspi_2_clk_config(M4CLK, qspi_clk_source, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN,
+				      qspi_div_fac);
 
-      // Configure QSPI clock with INTF PLL as input source
-#if defined(CLOCK_ROMDRIVER_PRESENT)
-      ROMAPI_M4SS_CLK_API->clk_qspi_clk_config(M4CLK, qspi_clk_source, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN, qspi_div_fac);
-#endif
+		break;
 
-      // Configure QSPI2 clock with INTF PLL as input source
-#ifdef SLI_SI91X_MCU_ENABLE_PSRAM_FEATURE
-      rsi_d_cache_invalidate_all();
-/* Configuring clock for PSRAM operation based on selected configs */
-#if defined(CLOCK_ROMDRIVER_PRESENT)
-      ROMAPI_M4SS_CLK_API->clk_qspi_2_clk_config(M4CLK, qspi_clk_source, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN, qspi_div_fac);
-#endif
-#endif
-      break;
+	case SL_SI91X_POWER_MANAGER_PS3:
+		/* Configure Ref clocks to 40MHz crystal */
+		siwx91x_aon_clock_request_xtal_to_nwp();
+		siwx91x_hp_ref_clk_config(HP_REF_EXT_40MHZ_CLK);
+		siwx91x_ulp_ref_clk_config(ULP_REF_EXT_40MHZ_CLK);
 
-    case SL_SI91X_POWER_MANAGER_PS2:
-      // Power modes are not applicable for PS2 state
-      UNUSED_PARAMETER(power_mode);
+		// configure M4 source frequency based on current state and mode
+		soc_pll_freq = power_mode ? PS3_PERFORMANCE_MODE_FREQ : PS3_POWERSAVE_MODE_FREQ;
+		if (power_mode) {
+			siwx91x_hp_set_m4_core_clk(M4_SOC_PLL_CLK, soc_pll_freq);
+		} else {
+			siwx91x_hp_set_m4_core_clk(M4_ULP_REF_CLK, 0);
+			//siwx91x_hp_set_pll_freq(SOC_PLL_CLK, soc_pll_freq, PLL_REF_CLK_XTAL);
+		}
 
-      // Configures the clock with 20MHz
-      RSI_IPMU_M20rcOsc_TrimEfuse();
-      // Sets FSM HF frequency to 20MHz
-      RSI_PS_FsmHfFreqConfig(20);
-      // Updated the clock global variables
-      RSI_PS_PS2UpdateClockVariable();
+		// Set INTF PLL based on current state and mode
+		intf_pll_freq = power_mode ? PS3_PERFORMANCE_MODE_FREQ : PS3_POWERSAVE_MODE_FREQ;
+		
+		if (intf_pll_freq == PS3_PERFORMANCE_MODE_FREQ) {
+			siwx91x_hp_set_pll_freq(INTF_PLL_CLK, intf_pll_freq, PLL_REF_CLK_XTAL);
+			qspi_clk_source = QSPI_INTFPLLCLK;
+			qspi_div_fac = 1;
+		} else {
+			qspi_clk_source = QSPI_ULPREFCLK;
+			qspi_div_fac = 2;
+		}
 
-      // The remaining clock configurations are common for PS2 and Sleep states
-      sli_status = config_sleep_clks();
-      break;
+		clk_qspi_clk_config(M4CLK, qspi_clk_source, QSPI_SWALLO_EN,
+							 QSPI_ODD_DIV_EN, qspi_div_fac);
 
-    case SL_SI91X_POWER_MANAGER_SLEEP:
-      // Power modes are not applicable for Sleep state
-      UNUSED_PARAMETER(power_mode);
 
-      // Configure clocks as per sleep state
-      sli_status = config_sleep_clks();
-      break;
+		clk_qspi_2_clk_config(M4CLK, qspi_clk_source, QSPI_SWALLO_EN,
+							   QSPI_ODD_DIV_EN, qspi_div_fac);
 
-    case SL_SI91X_POWER_MANAGER_PS1:
-    case SL_SI91X_POWER_MANAGER_PS0:
-    case SL_SI91X_POWER_MANAGER_STANDBY:
-      // Not needed for these states
-      sli_status = SL_STATUS_INVALID_STATE;
-      break;
+		break;
 
-    default:
-      // If reaches here, return error code
-      sli_status = SL_STATUS_INVALID_PARAMETER;
-      break;
-  }
+	case SL_SI91X_POWER_MANAGER_PS2:
+		// Power modes are not applicable for PS2 state
+		UNUSED_PARAMETER(power_mode);
 
-  return sli_status;
+		// Configures the clock with 20MHz
+		RSI_IPMU_M20rcOsc_TrimEfuse();
+		// Sets FSM HF frequency to 20MHz
+		RSI_PS_FsmHfFreqConfig(20);
+		// Updated the clock global variables
+		RSI_PS_PS2UpdateClockVariable();
+
+		// The remaining clock configurations are common for PS2 and Sleep states
+		sli_status = config_sleep_clks();
+		break;
+
+	case SL_SI91X_POWER_MANAGER_SLEEP:
+		// Power modes are not applicable for Sleep state
+		UNUSED_PARAMETER(power_mode);
+
+		// Configure clocks as per sleep state
+		sli_status = config_sleep_clks();
+		break;
+
+	case SL_SI91X_POWER_MANAGER_PS1:
+	case SL_SI91X_POWER_MANAGER_PS0:
+	case SL_SI91X_POWER_MANAGER_STANDBY:
+		// Not needed for these states
+		sli_status = SL_STATUS_INVALID_STATE;
+		break;
+
+	default:
+		// If reaches here, return error code
+		sli_status = SL_STATUS_INVALID_PARAMETER;
+		break;
+	}
+
+	return sli_status;
 }
 
 static int siwx91x_aon_clock_on(const struct device *dev, clock_control_subsys_t sys)
@@ -682,8 +638,8 @@ static enum clock_control_status siwx91x_aon_clock_get_status(const struct devic
 
 static int siwx91x_aon_clock_init(const struct device *dev)
 {
-	int ret;
 	ARG_UNUSED(dev);
+	int ret;
 
 	/*Updated the default SOC clock frequency - tend to be deleted */
 	SystemCoreClock = DEFAULT_40MHZ_CLOCK;
@@ -784,38 +740,30 @@ static int siwx91x_aon_clock_init(const struct device *dev)
 		return ret;
 	}
 
-#ifdef SL_SI91X_REQUIRES_INTF_PLL
-	// Configuring the interface PLL clock to 160MHz used by the peripherals whose source clock
-	// is INTF_PLL
-	status = siwx91x_hp_set_pll_freq(INTF_PLL_CLK, INTF_PLL_FREQUENCY, PLL_REF_CLK_XTAL);
-	if (status != SL_STATUS_OK) {
-		return status;
+	ret = siwx91x_hp_set_pll_freq(INTF_PLL_CLK, INTF_PLL_FREQUENCY, PLL_REF_CLK_XTAL);
+	if (ret != 0) {
+		return ret;
 	}
-	// Configure QSPI clock with INTF PLL as input source
-#if defined(CLOCK_ROMDRIVER_PRESENT)
-	ROMAPI_M4SS_CLK_API->clk_qspi_clk_config(pCLK, QSPI_INTFPLLCLK, QSPI_SWALLO_EN,
-						 QSPI_ODD_DIV_EN, QSPI_DIV_FACTOR);
-#endif
 
-#ifdef SLI_SI91X_MCU_PSRAM_PRESENT
-	// Configure QSPI2 clock with INTF PLL as input source
-#if defined(CLOCK_ROMDRIVER_PRESENT)
-	ROMAPI_M4SS_CLK_API->clk_qspi_2_clk_config(pCLK, QSPI_INTFPLLCLK, QSPI_SWALLO_EN,
-						   QSPI_ODD_DIV_EN, QSPI2_DIV_FACTOR);
-#endif
-#endif
-#endif /* SL_SI91X_REQUIRES_INTF_PLL */
-// #if (defined(SL_SI91X_MCU_CLK_OUT_EN) && (SL_SI91X_MCU_CLK_OUT_EN == 1))
-// 	sl_si91x_clock_manager_mcu_clk_out(sl_mcu_clk_out_config.pin_config,
-// 					   sl_mcu_clk_out_config.clk_source,
-// 					   sl_mcu_clk_out_config.div_factor);
-// #endif
+	/* need to clock the flash, maybe in the flash driver ?*/
+	clk_qspi_clk_config(M4CLK, QSPI_INTFPLLCLK, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN,
+			    QSPI_DIV_FACTOR);
+	/* needed to clock the psram, maybe in the psram driver ? */
+	clk_qspi_2_clk_config(M4CLK, QSPI_INTFPLLCLK, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN,
+			      QSPI2_DIV_FACTOR);
+
+	/* TODO: implement the clock out (meens using gpio driver to output the clock on a pin)
+	 * sl_si91x_clock_manager_mcu_clk_out(sl_mcu_clk_out_config.pin_config,
+	 *  					   sl_mcu_clk_out_config.clk_source,
+	 *  					   sl_mcu_clk_out_config.div_factor);
+	 */
 
 	/* Use SoC PLL at configured frequency as core clock */
 	ret = siwx91x_hp_set_m4_core_clk(M4_SOC_PLL_CLK,
 					 DT_PROP(DT_PATH(cpus, cpu_0), clock_frequency));
-	
-	/* Since we are reconfiguring the INTF_PLL which is used by the Flash, need to have the following code in ram*/
+
+	/* Since we are reconfiguring the INTF_PLL which is used by the Flash, need to have the
+	 * following code in ram*/
 	ret = siwx91x_hp_set_pll_freq(INTF_PLL_CLK, INTF_PLL_FREQUENCY, PLL_REF_CLK_XTAL);
 
 	/* Change the QSPI clock source to INTF_PLL */
