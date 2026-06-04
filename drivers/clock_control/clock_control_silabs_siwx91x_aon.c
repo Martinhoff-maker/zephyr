@@ -726,7 +726,7 @@ static DEVICE_API(clock_control, siwx91x_aon_clock_api) = {
 #define SIWX91X_AON_CLOCK_INIT(inst)                                                               \
 	static struct siwx91x_aon_clock_data siwx91x_aon_clock_data_##inst;                        \
 	DEVICE_DT_INST_DEFINE(inst, siwx91x_aon_clock_init, NULL, &siwx91x_aon_clock_data_##inst,  \
-			      NULL, PRE_KERNEL_1, CONFIG_CLOCK_CONTROL_INIT_PRIORITY,              \
+			      NULL, PRE_KERNEL_1, CONFIG_SIWX91X_AON_CLOCK_INIT_PRIORITY,          \
 			      &siwx91x_aon_clock_api);
 
 DT_INST_FOREACH_STATUS_OKAY(SIWX91X_AON_CLOCK_INIT)
