@@ -4,7 +4,10 @@
 config CLOCK_CONTROL_SILABS_SIWX91X
 	bool "SiWx91x clock control driver"
 	default y
-	depends on DT_HAS_SILABS_SIWX91X_CLOCK_ENABLED
+	depends on DT_HAS_SILABS_SIWX91X_CLOCK_ENABLED || \
+		   DT_HAS_SILABS_SIWX91X_HP_CLOCK_MANAGER_ENABLED || \
+		   DT_HAS_SILABS_SIWX91X_ULP_CLOCK_MANAGER_ENABLED || \
+		   DT_HAS_SILABS_SIWX91X_AON_CLOCK_MANAGER_ENABLED
 	help
 	 Enable clock management on Silicon Labs SiWx91x chips. This driver
 	 includes support for HP (High Performance), ULP (Ultra Low Power), and

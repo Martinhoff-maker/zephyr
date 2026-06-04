@@ -1,0 +1,30 @@
+# Copyright (c) 2024-2026 Silicon Laboratories Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  SiWx91x Always-On (AON) / NPSS clock manager.
+
+  Controls clocks for the always-on domain: RTC, watchdog timer, and the
+  reference clock selection for the M4SS and ULPSS subsystems during sleep
+  and wake transitions.
+
+compatible: "silabs,siwx91x-aon-clock-manager"
+
+include: [clock-controller.yaml, base.yaml]
+
+properties:
+  reg:
+    required: true
+
+  reg-names:
+    type: string-array
+    required: true
+    description: |
+      Register block for the AON/NPSS clock manager:
+        - mcu-aon: MCU AON/NPSS power and low-frequency clock control
+
+  "#clock-cells":
+    const: 1
+
+clock-cells:
+  - clkid

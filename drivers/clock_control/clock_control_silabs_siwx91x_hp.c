@@ -1,0 +1,217 @@
+/* Copyright (c) 2024-2026 Silicon Laboratories Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#define DT_DRV_COMPAT silabs_siwx91x_hp_clock_manager
+
+#include <zephyr/dt-bindings/clock/silabs/siwx91x-clock.h>
+#include <zephyr/drivers/clock_control.h>
+#include <zephyr/logging/log.h>
+
+#include "si91x_device.h"
+
+#include "clock_update.h"
+#include "rsi_pll.h"
+#include "rsi_power_save.h"
+#include "rsi_rom_clks.h"
+#include "sl_si91x_clock_manager.h"
+
+#define XTAL_FREQUENCY     40000000
+#define INTF_PLL_FREQUENCY 160000000
+
+
+LOG_MODULE_REGISTER(siwx91x_hp_clock, CONFIG_CLOCK_CONTROL_LOG_LEVEL);
+
+struct siwx91x_hp_clock_data {
+	uint32_t enable;
+};
+
+static int siwx91x_hp_clock_on(const struct device *dev, clock_control_subsys_t sys)
+{
+	struct siwx91x_hp_clock_data *data = dev->data;
+	uintptr_t clockid = (uintptr_t)sys;
+
+	switch (clockid) {
+	case SIWX91X_CLK_UART0:
+		RSI_PS_M4ssPeriPowerUp(M4SS_PWRGATE_ULP_EFUSE_PERI);
+		/* RSI_CLK_UsartClkConfig() calls RSI_CLK_PeripheralClkEnable(). */
+		RSI_CLK_UsartClkConfig(M4CLK, ENABLE_STATIC_CLK, 0, USART1, 0, 1);
+		break;
+	case SIWX91X_CLK_UART1:
+		RSI_PS_M4ssPeriPowerUp(M4SS_PWRGATE_ULP_EFUSE_PERI);
+		/* RSI_CLK_UsartClkConfig() calls RSI_CLK_PeripheralClkEnable(). */
+		RSI_CLK_UsartClkConfig(M4CLK, ENABLE_STATIC_CLK, 0, USART2, 0, 1);
+		break;
+	case SIWX91X_CLK_I2C0:
+		RSI_PS_M4ssPeriPowerUp(M4SS_PWRGATE_ULP_EFUSE_PERI);
+		RSI_CLK_I2CClkConfig(M4CLK, true, 0);
+		break;
+	case SIWX91X_CLK_I2C1:
+		RSI_PS_M4ssPeriPowerUp(M4SS_PWRGATE_ULP_EFUSE_PERI);
+		RSI_CLK_I2CClkConfig(M4CLK, true, 1);
+		break;
+	case SIWX91X_CLK_DMA0:
+		RSI_PS_M4ssPeriPowerUp(M4SS_PWRGATE_ULP_EFUSE_PERI);
+		RSI_CLK_PeripheralClkEnable(M4CLK, UDMA_CLK, ENABLE_STATIC_CLK);
+		break;
+	case SIWX91X_CLK_PWM:
+		RSI_PS_M4ssPeriPowerUp(M4SS_PWRGATE_ULP_EFUSE_PERI);
+		RSI_CLK_PeripheralClkEnable(M4CLK, PWM_CLK, ENABLE_STATIC_CLK);
+		break;
+	case SIWX91X_CLK_GSPI:
+		RSI_PS_M4ssPeriPowerUp(M4SS_PWRGATE_ULP_EFUSE_PERI);
+		RSI_CLK_GspiClkConfig(M4CLK, GSPI_INTF_PLL_CLK);
+		break;
+	case SIWX91X_CLK_QSPI:
+		RSI_CLK_Qspi2ClkConfig(M4CLK, QSPI_INTFPLLCLK, 0, 0, 1);
+		break;
+	case SIWX91X_CLK_I2S0:
+		RSI_PS_M4ssPeriPowerUp(M4SS_PWRGATE_ULP_EFUSE_PERI);
+		break;
+	case SIWX91X_CLK_STATIC_I2S0:
+		MISC_CFG_MISC_CTRL1 |= (1 << 23);
+		RSI_CLK_PeripheralClkEnable(M4CLK, I2SM_CLK, ENABLE_STATIC_CLK);
+		break;
+	case SIWX91X_CLK_GPDMA0:
+		RSI_CLK_PeripheralClkEnable(M4CLK, RPDMA_CLK, ENABLE_STATIC_CLK);
+		break;
+	case SIWX91X_CLK_RNG:
+		RSI_CLK_PeripheralClkEnable1(M4CLK, HWRNG_PCLK_ENABLE);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	data->enable |= BIT(clockid);
+	return 0;
+}
+
+static int siwx91x_hp_clock_off(const struct device *dev, clock_control_subsys_t sys)
+{
+	struct siwx91x_hp_clock_data *data = dev->data;
+	uintptr_t clockid = (uintptr_t)sys;
+
+	switch (clockid) {
+	case SIWX91X_CLK_UART0:
+		RSI_CLK_PeripheralClkDisable(M4CLK, USART1_CLK);
+		break;
+	case SIWX91X_CLK_UART1:
+		RSI_CLK_PeripheralClkDisable(M4CLK, USART2_CLK);
+		break;
+	case SIWX91X_CLK_DMA0:
+		RSI_CLK_PeripheralClkDisable(M4CLK, UDMA_CLK);
+		break;
+	case SIWX91X_CLK_STATIC_I2S0:
+		RSI_CLK_PeripheralClkDisable(M4CLK, I2SM_CLK);
+		break;
+	case SIWX91X_CLK_RNG:
+		/* Not supported. */
+		return 0;
+	case SIWX91X_CLK_I2C0:
+	case SIWX91X_CLK_I2C1:
+		/* Not supported. */
+		return 0;
+	default:
+		return -EINVAL;
+	}
+
+	data->enable &= ~BIT(clockid);
+	return 0;
+}
+
+static int siwx91x_hp_clock_get_rate(const struct device *dev, clock_control_subsys_t sys,
+					     uint32_t *rate)
+{
+	uintptr_t clockid = (uintptr_t)sys;
+
+	ARG_UNUSED(dev);
+
+	switch (clockid) {
+	case SIWX91X_CLK_UART0:
+		*rate = RSI_CLK_GetBaseClock(M4_USART0);
+		return 0;
+	case SIWX91X_CLK_UART1:
+		*rate = RSI_CLK_GetBaseClock(M4_UART1);
+		return 0;
+	case SIWX91X_CLK_PWM:
+		*rate = DT_PROP(DT_PATH(cpus, cpu_0), clock_frequency);
+		return 0;
+	case SIWX91X_CLK_GSPI:
+		*rate = INTF_PLL_FREQUENCY;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static int siwx91x_hp_clock_set_rate(const struct device *dev, clock_control_subsys_t sys,
+					     clock_control_subsys_rate_t raw_rate)
+{
+	uintptr_t clockid = (uintptr_t)sys;
+	uint32_t rate = *(uint32_t *)raw_rate;
+
+	ARG_UNUSED(dev);
+
+	switch (clockid) {
+	case SIWX91X_CLK_I2S0:
+		RSI_CLK_SetI2sPllFreq(M4CLK, rate, XTAL_FREQUENCY);
+		RSI_CLK_I2sClkConfig(M4CLK, I2S_PLLCLK, 0);
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static enum clock_control_status siwx91x_hp_clock_get_status(const struct device *dev,
+						      clock_control_subsys_t sys)
+{
+	struct siwx91x_hp_clock_data *data = dev->data;
+	uintptr_t clockid = (uintptr_t)sys;
+
+	if (data->enable & BIT(clockid)) {
+		return CLOCK_CONTROL_STATUS_ON;
+	}
+
+	return CLOCK_CONTROL_STATUS_OFF;
+}
+
+static int siwx91x_hp_clock_init(const struct device *dev)
+{
+
+#ifdef SL_SI91X_REQUIRES_INTF_PLL
+  	M4CLK_Type *pCLK = M4CLK;
+#endif
+
+	/* Keep runtime behavior identical to existing stack. */
+	sl_si91x_clock_manager_m4_set_core_clk(M4_SOCPLLCLK,
+					       DT_PROP(DT_PATH(cpus, cpu_0), clock_frequency));
+	sl_si91x_clock_manager_set_pll_freq(INFT_PLL, INTF_PLL_FREQUENCY, PLL_REF_CLK_VAL_XTAL);
+	
+	RSI_CLK_QspiClkConfig(M4CLK, QSPI_INTFPLLCLK, 0, 0, 1);
+
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(i2c0), okay)
+	siwx91x_hp_clock_on(dev, (clock_control_subsys_t)SIWX91X_CLK_I2C0);
+#endif
+
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(i2c1), okay)
+	siwx91x_hp_clock_on(dev, (clock_control_subsys_t)SIWX91X_CLK_I2C1);
+#endif
+
+	return 0;
+}
+
+static DEVICE_API(clock_control, siwx91x_hp_clock_api) = {
+	.on = siwx91x_hp_clock_on,
+	.off = siwx91x_hp_clock_off,
+	.get_rate = siwx91x_hp_clock_get_rate,
+	.set_rate = siwx91x_hp_clock_set_rate,
+	.get_status = siwx91x_hp_clock_get_status,
+};
+
+#define SIWX91X_HP_CLOCK_INIT(inst)                                                         \
+	static struct siwx91x_hp_clock_data siwx91x_hp_clock_data_##inst;                   \
+	DEVICE_DT_INST_DEFINE(inst, siwx91x_hp_clock_init, NULL,                             \
+			      &siwx91x_hp_clock_data_##inst, NULL, PRE_KERNEL_1,         \
+			      CONFIG_CLOCK_CONTROL_INIT_PRIORITY, &siwx91x_hp_clock_api);
+
+DT_INST_FOREACH_STATUS_OKAY(SIWX91X_HP_CLOCK_INIT)

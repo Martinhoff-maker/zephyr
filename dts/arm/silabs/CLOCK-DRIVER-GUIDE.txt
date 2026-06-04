@@ -1,0 +1,265 @@
+/* Clock Driver Implementation Guide for SIW917x
+ *
+ * This file explains a clean SIW917x clock architecture where the
+ * physical HP / ULP / AON clock blocks are described separately in DT,
+ * while the final programmed hardware state remains equivalent to the
+ * current DTS + driver + HAL behavior.
+ *
+ * File: /home/mahoff/zephyrproject/zephyr/dts/arm/silabs/CLOCK-DRIVER-GUIDE.txt
+ */
+
+================================================================================
+OVERVIEW
+================================================================================
+
+The siwg917-clean.dtsi exposes THREE physical clock manager nodes:
+
+1. hp_clock_manager @ 0x46000000
+  - HP clock-control block
+  - Additional register windows:
+    - misc-config @ 0x46008000
+    - pll @ 0x46180000
+  - Owns HP peripheral clocks and HP-specific static gate bits
+
+2. ulp_clock_manager @ 0x24041400
+  - ULP clock-control block
+  - Owns ULP peripheral clocks and ULP-specific dividers/gates
+
+3. aon_clock_manager @ 0x24048000
+  - AON / NPSS reference-clock and LF control block
+  - Owns RTC / watchdog domain and reference-clock switching relevant to sleep
+
+This is a cleaner hardware description.
+
+Critical rule: even if the DT representation is split, the final programmed hardware
+configuration must stay equivalent to the current stack.
+
+================================================================================
+DRIVER ARCHITECTURE
+================================================================================
+
+Recommended clean architecture:
+
+Option A: Multiple physical providers with the same flat clock IDs
+  - hp_clock_manager, ulp_clock_manager, aon_clock_manager each use `#clock-cells = <1>`
+  - Reuse the existing flat `SIWX91X_CLK_*` IDs
+  - The meaning of the ID is provider-scoped
+  - Example:
+    - `<&hp_clock_manager SIWX91X_CLK_UART0>`
+    - `<&ulp_clock_manager SIWX91X_CLK_ULP_UART>`
+    - `<&aon_clock_manager SIWX91X_CLK_RTC>`
+  - Keeps the DT readable without forcing a new enum namespace
+
+Option B: One aggregator driver above three physical managers
+  - Possible, but adds indirection without improving the hardware description
+
+The key point is not how many providers exist in DT. The key point is that the same
+physical clocks are selected and programmed as today.
+
+================================================================================
+CLOCK ID ENUMS (from siwx91x-clock.h)
+================================================================================
+
+Flat clock IDs reused across providers:
+  - SIWX91X_CLK_QSPI           // Flash controller
+  - SIWX91X_CLK_ULP_UART
+  - SIWX91X_CLK_ULP_I2C
+  - SIWX91X_CLK_ULP_DMA
+  - SIWX91X_CLK_UART0
+  - SIWX91X_CLK_UART1
+  - SIWX91X_CLK_I2C0
+  - SIWX91X_CLK_I2C1
+  - SIWX91X_CLK_GSPI
+  - SIWX91X_CLK_PWM
+  - SIWX91X_CLK_DMA0
+  - SIWX91X_CLK_GPDMA0
+  - SIWX91X_CLK_I2S0
+  - SIWX91X_CLK_STATIC_I2S0
+  - SIWX91X_CLK_ULP_I2S
+  - SIWX91X_CLK_STATIC_ULP_I2S
+  - SIWX91X_CLK_ADC
+  - SIWX91X_CLK_RNG
+  - SIWX91X_CLK_RTC
+  - SIWX91X_CLK_WATCHDOG
+  - SIWX91X_CLK_GPDMA0
+
+Provider ownership:
+  - hp_clock_manager: UART0, UART1, I2C0, I2C1, DMA0, PWM, GSPI, QSPI, I2S0, STATIC_I2S0, GPDMA0, RNG
+  - ulp_clock_manager: ULP_UART, ULP_I2C, ULP_DMA, ULP_I2S, STATIC_ULP_I2S, ADC
+  - aon_clock_manager: RTC, WATCHDOG
+
+Not all physically present clocks need to be exposed immediately. Keep parity with the
+old DTS and current driver first, then add more clocks when their behavior is verified.
+
+================================================================================
+CLOCK CONFIGURATIONS IN REGISTERS
+================================================================================
+
+For each clock, the driver must handle:
+
+1. Clock Source Selection
+   - Via CLK_CONFIG_REGx registers
+   - Sources: RC_32MHZ, XTAL_CLK, SOC_PLL, INTF_PLL, I2S_PLL, etc.
+   - Register offset varies by clock type
+
+2. Clock Divider (Prescaler)
+   - CLK_DIV_FAC fields
+   - Can be odd or even divisor
+   - Odd/even selection via _ODD_SEL bits
+
+3. Clock Gating (Enable/Disable)
+   - CLK_EN_SET_REGx: Write '1' to enable
+   - CLK_EN_CLEAR_REGx: Write '1' to disable
+   - Per-clock granularity
+
+4. Clock Status/Switching
+   - PLL_STAT_REG: Check if clock has switched
+   - Verify before accessing dependent blocks
+
+================================================================================
+REGISTER MAP REFERENCE (from siw917x-family-rm.pdf)
+================================================================================
+
+Physical register regions:
+  hp_clock_manager:
+    - m4clk @ 0x46000000
+    - misc-config @ 0x46008000
+    - pll @ 0x46180000
+  ulp_clock_manager:
+    - ulpclk @ 0x24041400
+  aon_clock_manager:
+    - mcu-aon @ 0x24048000
+    - includes MCU reference-clock registers around 0x24048100 / 0x2404811c
+
+Reference: siw917x-CLOCK-ARCHITECTURE.txt (extracted PDF section 6)
+
+================================================================================
+IMPLEMENTATION SKELETON
+================================================================================
+
+Possible implementation styles:
+
+1. Three clock drivers
+  - `silabs,siwx91x-hp-clock-manager`
+  - `silabs,siwx91x-ulp-clock-manager`
+  - `silabs,siwx91x-aon-clock-manager`
+  - Each driver stays small and domain-focused
+
+2. One shared implementation file with three DT compatibles
+  - Common helpers for HAL calls and rate calculation
+  - Thin wrappers per domain
+
+This is often the best compromise.
+
+#include <zephyr/drivers/clock_control.h>
+#include <zephyr/dt-bindings/clock/silabs/siwx91x-clock.h>
+#include <zephyr/logging/log.h>
+
+Implementation principle:
+  - Split by physical block, not by logical consumer category.
+  - Keep one shared helper layer for common HAL operations.
+  - Preserve all existing side effects from the current driver.
+
+================================================================================
+KEY FUNCTIONS BY DOMAIN
+================================================================================
+
+HP clock manager must preserve existing behavior:
+  - Processor clock (M4 core, up to 180 MHz)
+  - QSPI flash controller
+  - QSPI2 PSRAM controller
+  - USART0 / UART1
+  - SPI / SSI Primary
+  - I2S audio
+  - Timers (configurable)
+  - MVP (Matrix Vector Processor)
+  - Generic SPI Primary
+  - DMA (DMA0, GPDMA)
+  - RNG
+
+ULP clock manager must preserve existing behavior:
+  - MCU ULP AHB interface clock
+  - UART (ULP)
+  - SPI / SSI (ULP)
+  - I2S Controller (ULP)
+  - Timers (ULP)
+  - Aux ADC / DAC Controller
+  - UULP APB-related clocks used by ULP peripherals
+
+AON clock manager must preserve existing behavior:
+  - RTC
+  - Watchdog
+
+Important HAL behavior to keep:
+  - clock init programs M4 core to SOC PLL and INTF PLL to 160 MHz
+  - QSPI is switched to INTF PLL at init
+  - sleep path (`sli_si91x_config_clocks_to_mhz_rc`) switches both M4 and ULP reference clocks through the AON/FSM block
+  - the HAL change added an explicit wait for `M4_SOC_CLK_SWITCHED`
+  - static I2S HP still touches the misc-config register block
+  - static ULP I2S still programs `ULP_I2S_MASTER_SLAVE_MODE`
+  - ADC still includes AUX power gating side effects
+
+================================================================================
+BINDING REQUIREMENTS
+================================================================================
+
+Suggested bindings:
+
+bindings/clock/silabs,siwx91x-hp-clock-manager.yaml:
+  compatible: "silabs,siwx91x-hp-clock-manager"
+  include: [clock-controller.yaml]
+  properties:
+    reg:
+      description: Register ranges [m4clk, misc-config, pll]
+    reg-names:
+      items:
+        - const: m4clk
+        - const: misc-config
+        - const: pll
+
+bindings/clock/silabs,siwx91x-ulp-clock-manager.yaml:
+  compatible: "silabs,siwx91x-ulp-clock-manager"
+  include: [clock-controller.yaml]
+  properties:
+    reg:
+      description: Register range [ulpclk]
+    reg-names:
+      items:
+        - const: ulpclk
+
+bindings/clock/silabs,siwx91x-aon-clock-manager.yaml:
+  compatible: "silabs,siwx91x-aon-clock-manager"
+  include: [clock-controller.yaml]
+  properties:
+    reg:
+      description: Register range [mcu-aon]
+    reg-names:
+      items:
+        - const: mcu-aon
+
+Each binding can still use `#clock-cells = <1>` and the same flat SIWX91X clock IDs.
+
+================================================================================
+CURRENT STATUS
+================================================================================
+
+Directory structure created:
+  /home/mahoff/zephyrproject/zephyr/dts/arm/silabs/siwg917-clean.dtsi
+                                                          (NEW - clean architecture)
+
+Reference files available:
+  siw917x-CLOCK-ARCHITECTURE.txt    (Clock section extracted from manual)
+  siw917x-family-rm-extracted.txt   (Full reference manual)
+  siw917x-family-rm-INDEX.txt       (Quick reference index)
+
+Next steps:
+    1. Keep only clocks that already exist in the old DTS / current driver on the first pass
+    2. Implement HP / ULP / AON drivers or wrappers that preserve the current HAL side effects exactly
+    3. Verify the final physical state after init matches today:
+      - XTAL used as PLL reference
+      - SoC PLL drives the M4 core
+      - INTF PLL drives GSPI / QSPI-class peripherals
+      - LF XTAL path remains used for SYSRTC / WDT behavior
+    4. Verify sleep / wake transitions still use the AON reference-clock switching path
+
+================================================================================

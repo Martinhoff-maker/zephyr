@@ -1,0 +1,32 @@
+# Copyright (c) 2024-2026 Silicon Laboratories Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  SiWx91x High Performance (HP) clock manager.
+
+  Controls clocks for the M4SS (Cortex-M4 subsystem): UARTs, I2Cs, SPI,
+  I2S, DMA, PWM, QSPI, GPDMA, and RNG. Also owns the SoC PLL, INTF PLL,
+  and I2S PLL configuration registers.
+
+compatible: "silabs,siwx91x-hp-clock-manager"
+
+include: [clock-controller.yaml, base.yaml]
+
+properties:
+  reg:
+    required: true
+
+  reg-names:
+    type: string-array
+    required: true
+    description: |
+      Register blocks for the HP clock manager:
+        - m4clk: M4SS (HP) peripheral clock enable and configuration
+        - misc-config: HP miscellaneous control registers (e.g. I2S master mode)
+        - pll: SoC PLL, INTF PLL, and I2S PLL configuration
+
+  "#clock-cells":
+    const: 1
+
+clock-cells:
+  - clkid
