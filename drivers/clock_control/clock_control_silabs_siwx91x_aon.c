@@ -136,9 +136,6 @@ static int siwx91x_aon_clock_init(const struct device *dev)
 {
 	ARG_UNUSED(dev);
 
-	// Enables interrupts by clearing the PRIMASK register, allowing the processor to handle IRQs
-	__asm volatile("cpsie i" ::: "memory");
-
 	/*Updated the default SOC clock frequency*/
 	SystemCoreClock = DEFAULT_40MHZ_CLOCK;
 
