@@ -136,28 +136,30 @@ static int siwx91x_aon_clock_init(const struct device *dev)
 {
 	ARG_UNUSED(dev);
 
-	/*Updated the default SOC clock frequency*/
+	/*Updated the default SOC clock frequency - tend to be deleted */
 	SystemCoreClock = DEFAULT_40MHZ_CLOCK;
 
 	/*Initialize IPMU and MCU FSM blocks - Legacy Link*/
 	RSI_Ipmu_Init();
 
+	/* AON */
 	/*Configuring the ULP reference clock to 40MHz, as this frequency is required by the temperature sensor for chip supply mode configuration.*/
 	system_clocks.rf_ref_clock = DEFAULT_40MHZ_CLOCK;
 	MCU_FSM->MCU_FSM_REF_CLK_REG_b.ULPSS_REF_CLK_SEL_b = ULPSS_40MHZ_CLK;
       	system_clocks.ulp_ref_clock_source                 = ULPSS_40MHZ_CLK;
       	system_clocks.ulpss_ref_clk                        = system_clocks.rf_ref_clock;
 
+	/* maybe after sys init ?*/
 	/* IPMU mode configuration based on temperature - Legacy */
 	RSI_Configure_Ipmu_Mode();
 
+	/* HP */
 	/*Default clock mux configurations */
 	M4CLK->CLK_ENABLE_SET_REG3 = M4_SOC_CLK_FOR_OTHER_ENABLE;
 
+	/* AON */
 	/* NWP clock is selected as 40MHZ clock from MCU */
 	MCU_FSM->MCU_FSM_REF_CLK_REG_b.TASS_REF_CLK_SEL = ULP_MHZ_RC_CLK;
-	/* Changing NPSS GPIO 0 mode to 0, to disable buck-boost enable mode*/
-	MCU_RET->NPSS_GPIO_CNTRL[0].NPSS_GPIO_CTRLS_b.NPSS_GPIO_MODE = 0;
 
 	/* Configuring MCU FSM clock for BG_PMU */
 	RSI_IPMU_ClockMuxSel(2);

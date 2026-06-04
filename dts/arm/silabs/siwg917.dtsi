@@ -381,10 +381,7 @@
 			interrupt-names = "UULP";
 			gpio-controller;
 			#gpio-cells = <2>;
-			ngpios = <5>;
-			/* AON/UULP domain. No public clock ID is exposed for this block
-			 * in the current binding yet.
-			 */
+			ngpios = <4>;
 			status = "okay";
 		};
 
