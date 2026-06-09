@@ -57,6 +57,42 @@ The key point is not how many providers exist in DT. The key point is that the s
 physical clocks are selected and programmed as today.
 
 ================================================================================
+CLOCK ROUTES (silabs,siwx91x-clock-route)
+================================================================================
+
+Domain references and peripheral default sources use the same binding as children
+of each clock manager. At manager init, DT_INST_FOREACH_CHILD applies every
+silabs,siwx91x-clock-route node. The node label maps to clkid via
+SIWX91X_CLOCK_NODE_TO_ID() in clock_control_silabs_siwx91x.h.
+
+DT example:
+
+  ulp_clock_manager {
+      mcuulp_ref_clock: mcuulp-ref {
+          compatible = "silabs,siwx91x-clock-route";
+          clocks = <&xtal_mhz>;
+      };
+      ulp_uart_mux: ulp-uart-mux {
+          compatible = "silabs,siwx91x-clock-route";
+          clocks = <&mcuulp_ref_clock>;
+      };
+  };
+
+  ulpuart {
+      clocks = <&ulp_clock_manager SIWX91X_CLK_ULP_UART>;
+  };
+
+Rules:
+  - Node label must match SIWX91X_CLOCK_NODE_TO_ID()
+    (for example ulp_uart_mux -> SIWX91X_CLK_ULP_UART).
+  - clocks property is a standard phandle-array (one parent clock).
+  - Optional clock-div (hardware divider where supported).
+  - Gate-only clocks (RNG, DMA0, GPDMA0) have no route child; on() only enables gate.
+  - Runtime mux changes still use clock_control_configure() (for example PM / sleep).
+  - PLL outputs: silabs,siwx91x-pll; all three must use clocks = <&hp_pll_ref_mux>.
+  - hp_pll_ref_mux: silabs,siwx91x-clock-route (SIWX91X_CLK_PLL_REF), one ref for all PLLs.
+
+================================================================================
 CLOCK ID ENUMS (from siwx91x-clock.h)
 ================================================================================
 

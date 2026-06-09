@@ -18,53 +18,41 @@
 		zephyr,flash-controller = &flashctrl0;
 	};
 
-	/* ======================================================================
-	 * LOGICAL CLOCK OUTPUTS
-	 * Keep the physical topology explicit: reference clocks, PLL reference,
-	 * and derived logical outputs are modeled here, while the three physical
-	 * manager blocks remain separate in /soc.
-	 * ====================================================================== */
 	clocks {
-		mcuhp_ref_clock: mcuhp_ref_clock {
-			compatible = "fixed-factor-clock";
+
+		xtal_mhz: xtal_mhz {
+			compatible = "fixed-clock";
 			#clock-cells = <0>;
-			clocks = <&xtal_mhz>;
+			clock-frequency = <DT_FREQ_M(40)>;
+			status = "okay";
 		};
 
-		mcuulp_ref_clock: mcuulp_ref_clock {
-			compatible = "fixed-factor-clock";
+		xtal_khz: xtal_khz {
+			compatible = "silabs,siwx91x-physical-clock";
 			#clock-cells = <0>;
-			clocks = <&xtal_mhz>;
+			clock-frequency = <32768>;
+			silabs,startup-time-us = <2500000>;
+			status = "okay";
 		};
 
-		pll_ref_clock: pll_ref_clock {
-			compatible = "fixed-factor-clock";
+		rc_mhz: rc_mhz {
+			compatible = "silabs,siwx91x-physical-clock";
 			#clock-cells = <0>;
-			clocks = <&xtal_mhz>;
+			clock-frequency = <DT_FREQ_M(32)>;
+			silabs,startup-time-us = <10>;
+			status = "okay";
 		};
 
-		soc_pll_clock: soc_pll_clock {
-			compatible = "fixed-factor-clock";
+		rc_khz: rc_khz {
+			compatible = "silabs,siwx91x-physical-clock";
 			#clock-cells = <0>;
-			clocks = <&pll_ref_clock>;
+			clock-frequency = <DT_FREQ_K(32)>;
+			silabs,startup-time-us = <500>;
+			status = "okay";
 		};
 
-		intf_pll_clock: intf_pll_clock {
-			compatible = "fixed-factor-clock";
-			#clock-cells = <0>;
-			clocks = <&pll_ref_clock>;
-		};
-
-		i2s_pll_clock: i2s_pll_clock {
-			compatible = "fixed-factor-clock";
-			#clock-cells = <0>;
-			clocks = <&pll_ref_clock>;
-		};
 	};
 
-	/* ======================================================================
-	 * CPU AND POWER STATES
-	 * ====================================================================== */
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -89,10 +77,6 @@
 			};
 		};
 	};
-
-	/* ======================================================================
-	 * MEMORY REGIONS
-	 * ====================================================================== */
 
 	/* First 1KB of SRAM reserved for NWP (protects against null pointers) */
 	nwp_reserved: memory@0 {
@@ -142,37 +126,44 @@
 		};
 	};
 
-	/* ======================================================================
-	 * SOC PERIPHERALS AND CLOCK MANAGERS
-	 * ====================================================================== */
 	soc {
-		/* The three physical clock domains stay explicit in DT.
-		 * This is the cleaner hardware description, while the final software
-		 * behavior must remain identical to the current stack:
-		 * - XTAL as PLL reference
-		 * - M4 core on SOC PLL at runtime
-		 * - peripheral interface clocks on INTF PLL where required
-		 * - sleep/wake reference-clock switching through the AON/FSM block
-		 */
-
 		aon_clock_manager: aon_clk_mng@24048000 {
 			compatible = "silabs,siwx91x-aon-clock-manager";
-			reg = <0x24048000 0x200>;
-			reg-names = "mcu_aon";
+			reg = <0x24048000 0x100>,
+			      <0x24048100 0x100>;
+
+			reg-names = "mcu_aon","mcu_fsm";
 			#clock-cells = <1>;
 			status = "okay";
 
-			mcu_ref_clock_cfg: mcu_ref_clock_cfg {
-				compatible = "fixed-factor-clock";
+			mcuhp_ref_clock: mcuhp_ref_clock {
+				compatible = "silabs,siwx91x-clock-route";
 				#clock-cells = <0>;
-				clocks = <&mcuhp_ref_clock>;
+				clocks = <&xtal_mhz>;
 			};
 
-			mcu_ulp_osc_clock: mcu_ulp_osc_clock {
-				compatible = "fixed-factor-clock";
+			mcuulp_ref_clock: mcuulp_ref_clock {
+				compatible = "silabs,siwx91x-clock-route";
 				#clock-cells = <0>;
-				clocks = <&mcuulp_ref_clock>;
+				clocks = <&xtal_mhz>;
 			};
+
+			/* Low-Power State machines clock */
+			mcuuulp_hf_ref_clock: mcuuulp_hf_ref_clock {
+				compatible = "silabs,siwx91x-clock-route";
+				#clock-cells = <0>;
+				clocks = <&rc_mhz>;
+			};
+
+			/* Shared clock for watchdog/Deep-sleep timer and GPIO timestamping in the UULP domain */
+			mcuuulp_lf_ref_clock: mcuuulp_lf_ref_clock {
+				compatible = "silabs,siwx91x-clock-route";
+				#clock-cells = <0>;
+				clocks = <&xtal_khz>;
+			};
+
+			/* RTC and watchdog LF muxes are fixed to UULP LF ref in hardware. */
+			/* SYSRTC source: sleeptimer / HAL, not a clock-route child here. */
 		};
 
 		ulp_clock_manager: ulp_clk_mng@24041400 {
@@ -181,6 +172,57 @@
 			reg-names = "ulpclk";
 			#clock-cells = <1>;
 			status = "okay";
+
+			/* ULP AHB / processor interface clock (not owned by a single peripheral). */
+			mcu_ulp_clock: mcu_ulp_clock {
+				compatible = "silabs,siwx91x-clock-route";
+				#clock-cells = <0>;
+				clock-div = <1>;
+				clocks = <&mcuulp_ref_clock>;
+			};
+
+			ulp_uart_mux: ulp-uart-mux {
+				compatible = "silabs,siwx91x-clock-route";
+				#clock-cells = <0>;
+				clock-div = <1>;
+				clocks = <&mcuulp_ref_clock>;
+			};
+
+
+			ulp_i2s_mux: ulp-i2s-mux {
+				compatible = "silabs,siwx91x-clock-route";
+				#clock-cells = <0>;
+				clock-div = <1>;
+				clocks = <&mcuulp_ref_clock>;
+			};
+
+			ulp_ssi_mux: ulp-ssi-mux {
+				compatible = "silabs,siwx91x-clock-route";
+				#clock-cells = <0>;
+				clock-div = <1>;
+				clocks = <&mcuulp_ref_clock>;
+			};
+
+			adc_mux: adc-mux {
+				compatible = "silabs,siwx91x-clock-route";
+				#clock-cells = <0>;
+				clocks = <&mcuulp_ref_clock>;
+			};
+
+			ulp_timer_mux: ulp-timer-mux {
+				compatible = "silabs,siwx91x-clock-route";
+				#clock-cells = <0>;
+				clocks = <&mcuulp_ref_clock>;
+			};
+
+			/* Sleep sensor clock - APB bus clock to configure uulp peripheral clocks */
+			ulp_slp_sensor_mux: ulp-slp-sensor-mux {
+				compatible = "silabs,siwx91x-clock-route";
+				#clock-cells = <0>;
+				clock-div = <2>;
+				clocks = <&mcu_ulp_clock>;
+			};
+
 		};
 
 		hp_clock_manager: hp_clk_mng@46000000 {
@@ -191,42 +233,85 @@
 			reg-names = "m4clk", "misc_config", "pll";
 			#clock-cells = <1>;
 			status = "okay";
-			pll: pll {
-				compatible = "silabs,siwx91x-pll";
-				
+
+			/* Shared PLL reference mux (one source for SoC/INTF/I2S PLLs). */
+			pll_ref_mux: pll-ref-mux {
+				compatible = "silabs,siwx91x-clock-route";
 				#clock-cells = <0>;
+				clocks = <&xtal_mhz>;
+			};
+
+			uart0_mux: uart0-mux {
+				compatible = "silabs,siwx91x-clock-route";
+				#clock-cells = <0>;
+				clocks = <&hp_intf_pll_clock>;
+			};
+
+			uart1_mux: uart1-mux {
+				compatible = "silabs,siwx91x-clock-route";
+				#clock-cells = <0>;
+				clocks = <&hp_intf_pll_clock>;
+			};
+
+			i2c0_mux: i2c0-mux {
+				compatible = "silabs,siwx91x-clock-route";
+				#clock-cells = <0>;
+				clocks = <&hp_intf_pll_clock>;
+			};
+
+			i2c1_mux: i2c1-mux {
+				compatible = "silabs,siwx91x-clock-route";
+				#clock-cells = <0>;
+				clocks = <&hp_intf_pll_clock>;
+			};
+
+			gspi_mux: gspi-mux {
+				compatible = "silabs,siwx91x-clock-route";
+				#clock-cells = <0>;
+				clocks = <&hp_intf_pll_clock>;
+			};
+
+			qspi_mux: qspi-mux {
+				compatible = "silabs,siwx91x-clock-route";
+				#clock-cells = <0>;
+				clocks = <&hp_intf_pll_clock>;
+			};
+
+			i2s0_mux: i2s0-mux {
+				compatible = "silabs,siwx91x-clock-route";
+				#clock-cells = <0>;
+				clocks = <&hp_i2s_pll_clock>;
+			};
+
+
+			pwm_mux: pwm-mux {
+				compatible = "silabs,siwx91x-clock-route";
+				#clock-cells = <0>;
+				clocks = <&hp_intf_pll_clock>;
+			};
+
+			soc_pll_clock: soc_pll {
+				compatible = "silabs,siwx91x-pll";
+				#clock-cells = <0>;
+				clocks = <&hp_pll_ref_mux>;
+				clock-frequency = <DT_FREQ_M(180)>;
+			};
+
+			intf_pll_clock: intf_pll {
+				compatible = "silabs,siwx91x-pll";
+				#clock-cells = <0>;
+				clocks = <&hp_pll_ref_mux>;
+				clock-frequency = <DT_FREQ_M(120)>;
+			};
+
+			i2s_pll_clock: i2s_pll {
+				compatible = "silabs,siwx91x-pll";
+				#clock-cells = <0>;
+				clocks = <&hp_pll_ref_mux>;
+				clock-frequency = <DT_FREQ_M(12)>;
 			};
 		};
 
-		xtal_mhz: xtal_mhz {
-			compatible = "fixed-clock";
-			#clock-cells = <0>;
-			clock-frequency = <DT_FREQ_M(40)>;
-			status = "disabled";
-		};
-
-		xtal_32kHz: xtal_32kHz {
-			compatible = "fixed-clock";
-			#clock-cells = <0>;
-			clock-frequency = <32768>;
-			status = "disabled";
-		};
-
-		rc_32mhz: rc_32mhz {
-			compatible = "silabs,siwx91x-rc-mhz";
-			#clock-cells = <0>;
-			status = "okay";
-		};
-
-		rc_32kHz: rc_32kHz {
-			compatible = "silabs,siwx91x-rc-32khz";
-			#clock-cells = <0>;
-			status = "okay";
-		};
-
-		/* ==============================================================
-		 * FLASH CONTROLLER
-		 * ============================================================== */
 		flashctrl0: flash-controller@12000000 {
 			compatible = "silabs,siwx91x-flash-controller";
 			reg = <0x12000000 0x200>;
@@ -244,32 +329,20 @@
 			};
 		};
 
-		/* ==============================================================
-		 * MEMORY CONTROLLER
-		 * ============================================================== */
 		memc: memory-controller@12040000 {
 			compatible = "silabs,siwx91x-qspi-memory";
 			reg = <0x12040000 0x200>;
 			#address-cells = <1>;
 			#size-cells = <1>;
-			/* HP domain. The clean architecture keeps the ownership visible,
-			 * but there is no dedicated public clock ID for the PSRAM/QSPI2
-			 * path in the current binding yet.
-			 */
+			clocks = <&hp_clock_manager SIWX91X_CLK_PSRAM>;
 			status = "disabled";
 		};
 
-		/* ==============================================================
-		 * PIN CONTROLLER
-		 * ============================================================== */
 		pinctrl0: pinctrl@46130000 {
 			compatible = "silabs,siwx91x-pinctrl";
 			reg = <0x46130000 0x1000>;
 		};
 
-		/* ==============================================================
-		 * POWER DOMAIN
-		 * ============================================================== */
 		siwx91x_soc_pd: siwx91x-soc-pd {
 			compatible = "silabs,siwx91x-power-domain";
 			#power-domain-cells = <0>;
@@ -278,11 +351,6 @@
 			status = "okay";
 		};
 
-		/* ==============================================================
-		 * GPIO CONTROLLERS
-		 * ============================================================== */
-
-		/* Main GPIO (HP domain) - Ports A, B, C, D */
 		egpio0: egpio@46130000 {
 			compatible = "silabs,siwx91x-gpio";
 			reg = <0x46130000 0x1260>;
@@ -292,9 +360,7 @@
 					  "PIN4", "PIN5", "PIN6", "PIN7";
 			#address-cells = <1>;
 			#size-cells = <0>;
-			/* HP domain. A dedicated public GPIO clock ID is not exposed in
-			 * the current SIWX91X clock binding/driver yet.
-			 */
+			clocks = <&hp_clock_manager SIWX91X_CLK_GPIO>;
 			power-domains = <&siwx91x_soc_pd>;
 			zephyr,pm-device-runtime-auto;
 
@@ -344,7 +410,6 @@
 			};
 		};
 
-		/* ULP GPIO - Port designed for low power */
 		egpio1: egpio@2404c000 {
 			compatible = "silabs,siwx91x-gpio";
 			reg = <0x2404c000 0x1260>;
@@ -353,9 +418,7 @@
 			silabs,ulp;
 			#address-cells = <1>;
 			#size-cells = <0>;
-			/* ULP domain. This ownership is known physically, but there is no
-			 * public ULP GPIO clock ID in the current binding yet.
-			 */
+			clocks = <&ulp_clock_manager SIWX91X_CLK_ULP_GPIO>;
 			power-domains = <&siwx91x_soc_pd>;
 			zephyr,pm-device-runtime-auto;
 
@@ -372,7 +435,6 @@
 			};
 		};
 
-		/* UULP GPIO - Ultra-low power always-on GPIO (5 pins) */
 		uulpgpio: uulpgpio@24048600 {
 			compatible = "silabs,siwx91x-gpio-uulp";
 			reg = <0x24048600 0x30>, <0x12080000 0x18>;
@@ -382,14 +444,10 @@
 			gpio-controller;
 			#gpio-cells = <2>;
 			ngpios = <4>;
+			clocks = <&ulp_clock_manager SIWX91X_CLK_UULP_GPIO>;
 			status = "okay";
 		};
 
-		/* ==============================================================
-		 * COMMUNICATION INTERFACES (HP Domain)
-		 * ============================================================== */
-
-		/* UART 0 - HP domain */
 		uart0: uart@44000000 {
 			compatible = "ns16550";
 			reg = <0x44000000 0x1000>;
@@ -402,7 +460,6 @@
 			status = "disabled";
 		};
 
-		/* UART 1 - HP domain */
 		uart1: uart@45020000 {
 			compatible = "ns16550";
 			reg = <0x45020000 0x1000>;
@@ -415,7 +472,6 @@
 			status = "disabled";
 		};
 
-		/* UART ULP - Ultra-low power domain */
 		ulpuart: uart@24041800 {
 			compatible = "ns16550";
 			reg = <0x24041800 0x1000>;
@@ -428,7 +484,6 @@
 			status = "disabled";
 		};
 
-		/* I2C 0 - HP domain */
 		i2c0: i2c@44010000 {
 			compatible = "snps,designware-i2c";
 			#address-cells = <1>;
@@ -451,96 +506,6 @@
 			clocks = <&hp_clock_manager SIWX91X_CLK_I2C1>;
 			status = "disabled";
 		};
-
-		ulpdma: dma@24078000 {
-			compatible = "silabs,udma";
-			#address-cells = <1>;
-			#size-cells = <0>;
-			reg = <0x24078000 0x82c>;
-			interrupts = <10 0>;
-			interrupt-names = "ulpdma";
-			clocks = <&clock0 SIWX91X_CLK_ULP_DMA>;
-			silabs,sram-region = <&sram_dma1>;
-			#dma-cells = <1>;
-			dma-channels = <12>;
-			power-domains = <&siwx91x_soc_pd>;
-			zephyr,pm-device-runtime-auto;
-			status = "disabled";
-		};
-
-		dma0: dma@44030000 {
-			compatible = "silabs,udma";
-			#address-cells = <1>;
-			#size-cells = <0>;
-			reg = <0x44030000 0x82c>;
-			interrupts = <33 0>;
-			interrupt-names = "dma0";
-			clocks = <&clock0 SIWX91X_CLK_DMA0>;
-			#dma-cells = <1>;
-			dma-channels = <32>;
-			power-domains = <&siwx91x_soc_pd>;
-			zephyr,pm-device-runtime-auto;
-			status = "disabled";
-		};
-
-		gpdma: gpdma@21080000 {
-			compatible = "silabs,gpdma";
-			#address-cells = <1>;
-			#size-cells = <0>;
-			reg = <0x21080000 0x1720>;
-			interrupts = <31 0>;
-			interrupt-names = "gpdma";
-			clocks = <&clock0 SIWX91X_CLK_GPDMA0>;
-			silabs,channel-reg-base = <0x21081004>;
-			silabs,dma-channel-count = <8>;
-			#dma-cells = <2>;
-			power-domains = <&siwx91x_soc_pd>;
-			zephyr,pm-device-runtime-auto;
-			status = "disabled";
-		};
-
-		pwm: pwm@47070000 {
-			compatible = "silabs,siwx91x-pwm";
-			#address-cells = <1>;
-			#size-cells = <0>;
-			reg = <0x47070000 0x14c>;
-			interrupts = <48 0>;
-			interrupt-names = "pwm";
-			clocks = <&clock0 SIWX91X_CLK_PWM>;
-			#pwm-cells = <2>;
-			silabs,ch-prescaler = <64 64 64 64>;
-			power-domains = <&siwx91x_soc_pd>;
-			zephyr,pm-device-runtime-auto;
-			status = "disabled";
-		};
-
-		rtc0: rtc@24048200 {
-			compatible = "silabs,siwx91x-rtc";
-			reg = <0x24048200 0x40>;
-			interrupts = <28 0>;
-			interrupt-names = "rtc";
-			clocks = <&clock0 SIWX91X_CLK_RTC>;
-			status = "disabled";
-		};
-
-		watchdog: wdt@24048300 {
-			compatible = "silabs,siwx91x-wdt";
-			#address-cells = <1>;
-			#size-cells = <0>;
-			reg = <0x24048300 0x1c>;
-			interrupts = <20 0>;
-			interrupt-names = "watchdog";
-			clocks = <&clock0 SIWX91X_CLK_WATCHDOG>;
-			status = "disabled";
-		};
-
-		sysrtc0: sysrtc@24048c00 {
-			compatible = "silabs,sysrtc";
-			reg = <0x24048c00 0x78>;
-			interrupts = <22 0>;
-			interrupt-names = "sysrtc";
-			clock-frequency = <DT_FREQ_K(32)>;
-			prescaler = <1>;
 		/* I2C ULP - Ultra-low power domain */
 		ulpi2c: i2c@24040000 {
 			compatible = "snps,designware-i2c";
@@ -569,10 +534,6 @@
 			zephyr,pm-device-runtime-auto;
 			status = "disabled";
 		};
-
-		/* ==============================================================
-		 * AUDIO INTERFACES
-		 * ============================================================== */
 
 		/* I2S HP - High Performance domain */
 		i2s0: i2s@47050000 {
@@ -608,10 +569,6 @@
 			status = "disabled";
 		};
 
-		/* ==============================================================
-		 * DATA ACQUISITION (ADC, DAC)
-		 * ============================================================== */
-
 		/* ADC - ULP domain */
 		adc0: adc@24043800 {
 			compatible = "silabs,siwx91x-adc";
@@ -625,10 +582,6 @@
 			#io-channel-cells = <1>;
 			status = "disabled";
 		};
-
-		/* ==============================================================
-		 * DMA CONTROLLERS
-		 * ============================================================== */
 
 		/* ULP DMA - Ultra-low power domain */
 		ulpdma: dma@24078000 {
@@ -680,11 +633,6 @@
 			status = "disabled";
 		};
 
-		/* ==============================================================
-		 * TIMERS AND COUNTERS
-		 * ============================================================== */
-
-		/* PWM - HP domain */
 		pwm: pwm@47070000 {
 			compatible = "silabs,siwx91x-pwm";
 			#address-cells = <1>;
@@ -700,11 +648,6 @@
 			status = "disabled";
 		};
 
-		/* ==============================================================
-		 * TIMEKEEPING (RTC, Watchdog, System RTC)
-		 * ============================================================== */
-
-		/* RTC - AON domain (always-on) */
 		rtc0: rtc@24048200 {
 			compatible = "silabs,siwx91x-rtc";
 			reg = <0x24048200 0x40>;
@@ -714,7 +657,6 @@
 			status = "disabled";
 		};
 
-		/* Watchdog - AON domain (always-on) */
 		watchdog: wdt@24048300 {
 			compatible = "silabs,siwx91x-wdt";
 			#address-cells = <1>;
@@ -726,26 +668,16 @@
 			status = "disabled";
 		};
 
-		/* System RTC - For sleep timer / timestamping */
 		sysrtc0: sysrtc@24048c00 {
 			compatible = "silabs,sysrtc";
 			reg = <0x24048c00 0x78>;
 			interrupts = <22 0>;
 			interrupt-names = "sysrtc";
-			/* LF clock path owned by the AON/FSM side. The current Zephyr
-			 * model still treats SYSRTC as configured through the low-frequency
-			 * clock setup rather than a dedicated public clock ID.
-			 */
-			clock-frequency = <DT_FREQ_K(32)>;
-			prescaler = <1>;
+			/* Only informative, managed by sleeptimer driver configuration file sl_sleeptimer_hal_si91x_sysrtc.c*/
+			clocks = <&aon_clock_manager SIWX91X_CLK_SYSRTC>;
 			status = "disabled";
 		};
 
-		/* ==============================================================
-		 * SECURITY AND ENTROPY
-		 * ============================================================== */
-
-		/* RNG - Random number generator */
 		rng0: rng@45090000 {
 			compatible = "silabs,siwx91x-rng";
 			reg = <0x45090000 0x8>;
@@ -754,7 +686,6 @@
 	};
 };
 
-/* Interrupt controller configuration */
 &nvic {
 	arm,num-irq-priority-bits = <6>;
 };

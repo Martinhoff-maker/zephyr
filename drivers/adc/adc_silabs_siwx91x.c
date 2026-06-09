@@ -238,7 +238,7 @@ static int adc_siwx91x_init(const struct device *dev)
 	int ret;
 
 	ret = clock_control_on(cfg->clock_dev, cfg->clock_subsys);
-	if (ret) {
+	if (ret != 0 && ret != -EALREADY) {
 		return ret;
 	}
 
@@ -390,7 +390,7 @@ static void adc_siwx91x_isr(const struct device *dev)
 	static const struct adc_siwx91x_config adc_cfg_##inst = {                                  \
 		.reg = (AUX_ADC_DAC_COMP_Type *)DT_INST_REG_ADDR(inst),                            \
 		.clock_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(inst)),                             \
-		.clock_subsys = (clock_control_subsys_t)DT_INST_PHA(inst, clocks, clkid),          \
+		.clock_subsys = (clock_control_subsys_t)DT_INST_CLOCKS_CELL(inst, clkid),                                      \
 		.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(inst),                                      \
 		.irq_configure = siwx91x_adc_irq_configure_##inst,                                 \
 		.ref_voltage = DT_INST_PROP(inst, silabs_adc_ref_voltage),                         \

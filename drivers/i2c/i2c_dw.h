@@ -8,6 +8,10 @@
 #ifndef ZEPHYR_DRIVERS_I2C_I2C_DW_H_
 #define ZEPHYR_DRIVERS_I2C_I2C_DW_H_
 
+#if IS_ENABLED(CONFIG_CLOCK_CONTROL)
+#include <zephyr/drivers/clock_control.h>
+#endif
+
 #include <zephyr/drivers/i2c.h>
 #include <stdbool.h>
 
@@ -180,6 +184,12 @@ struct i2c_dw_rom_config {
 #ifdef CONFIG_I2C_DW_EXTENDED_SUPPORT
 	uint32_t sda_timeout_value;
 	uint32_t scl_timeout_value;
+#endif
+
+#if IS_ENABLED(CONFIG_CLOCK_CONTROL)
+	bool use_clock;
+	const struct device *clock_dev;
+	clock_control_subsys_t clock_subsys;
 #endif
 };
 

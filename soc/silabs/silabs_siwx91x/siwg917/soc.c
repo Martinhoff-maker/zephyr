@@ -12,11 +12,40 @@
 #include "em_device.h"
 #include "power.h"
 #include "sl_si91x_hal_soc_soft_reset.h"
-
+#include "rsi_ipmu.h"
+#include "rsi_rom_ulpss_clk.h"
 
 void soc_early_init_hook(void)
 {
 	SystemInit();
+
+	RSI_Ipmu_Init();
+
+	/* Configuring the ULP reference clock to 40MHz, as this frequency is required by the
+	 * temperature sensor for chip supply mode configuration.
+	 */
+	MCU_FSM->MCU_FSM_REF_CLK_REG_b.ULPSS_REF_CLK_SEL_b = ULPSS_40MHZ_CLK;
+
+	/* maybe after sys init ?*/
+	/* IPMU mode configuration based on temperature - Legacy */
+	RSI_Configure_Ipmu_Mode();
+
+	/* NWP clock is selected as 40MHZ clock from MCU -- why not the ULP_MHZ_BYPASS_RC ?*/
+	MCU_FSM->MCU_FSM_REF_CLK_REG_b.TASS_REF_CLK_SEL = ULP_MHZ_RC_CLK;
+
+	/* Configuring MCU FSM clock for BG_PMU */
+	RSI_IPMU_ClockMuxSel(2);
+
+	/* XTAL control pointed to Software and  XTAL is Turned-Off from M4 */
+	/* old RSI_ConfigXtal*/
+	BATT_FF->MCU_FSM_CTRL_BYPASS_b.MCU_XTAL_EN_40MHZ_BYPASS =
+		(unsigned int)((XTAL_DISABLE_FROM_M4 & 0x1) & 0x01);
+	BATT_FF->MCU_FSM_CTRL_BYPASS_b.MCU_XTAL_EN_40MHZ_BYPASS_CTRL =
+		(unsigned int)((XTAL_IS_IN_SW_CTRL_FROM_M4 & 0x1) & 0x01);
+
+	/* Before NWP is going to power save mode ,set m4ss_ref_clk_mux_ctrl ,
+	tass_ref_clk_mux_ctrl, AON domain power supply controls from NWP to M4 */
+	RSI_Set_Cntrls_To_M4();
 
 	if (IS_ENABLED(CONFIG_PM)) {
 		siwx91x_power_init();

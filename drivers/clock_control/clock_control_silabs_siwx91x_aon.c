@@ -2,584 +2,273 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "zephyr/sys/__assert.h"
 #define DT_DRV_COMPAT silabs_siwx91x_aon_clock_manager
 
-#include <zephyr/dt-bindings/clock/silabs/siwx91x-clock.h>
 #include <zephyr/drivers/clock_control.h>
+#include <zephyr/drivers/clock_control/clock_control_silabs_siwx91x.h>
 #include <zephyr/logging/log.h>
 
 #include "si91x_device.h"
 
-#include "clock_update.h"
 #include "rsi_power_save.h"
 #include "rsi_sysrtc.h"
 
-#include "sl_si91x_power_manager.h"
-
-// temporary until we have a better way to share these headers between clock control and the rest of
-// the driver
-#include "rsi_rom_ulpss_clk.h"
-#include "rsi_rom_clks.h"
-#include "sl_status.h"
+/* For sli_si91x_xtal_turn_on_request_from_m4_to_TA
+ * Will be removed when the function will be implemented
+ * in the NWP driver and we will call it through the NWP device API
+ */
 #include "rsi_m4.h"
-#include "rsi_ipmu.h"
-#define INTF_PLL_FREQUENCY 160000000
-#define SOC_PLL_FREQ       (180000000UL) // 180MHz default SoC PLL Clock as source to Processor
-
-#define PLL_PREFETCH_LIMIT     (120000000UL) // 120MHz Limit for pll clock
-#define MAX_PLL_FREQUENCY      (180000000UL) ///< Max PLL frequency is 180MHz
-#define LF_FSM_CLOCK_FREQUENCY 32768
-#define MANUAL_LOCK            1    // Manual lock enable
-#define BYPASS_MANUAL_LOCK     1    // Bypass manual lock enable
-#define SOC_PLL_MM_COUNT_LIMIT 0xA4 // Soc pll count limit
-
-#define QSPI_DIV_FACTOR  1
-#define QSPI_ODD_DIV_EN  0 // Odd division enable for QSPI clock
-#define QSPI_SWALLO_EN   0 // Swallo enable for QSPI clock
-#define QSPI2_DIV_FACTOR 1 // Division factor for QSPI2 clock
-
-#define PS4_PERFORMANCE_MODE_SOC_FREQ  (180000000UL) // PS4 high power soc pll clock frequency
-#define PS4_PERFORMANCE_MODE_INTF_FREQ (160000000UL) // PS4 high power intf pll clock frequency
-#define PS4_POWERSAVE_MODE_FREQ        (100000000UL) // PS4 low power clock frequency
-#define PS3_PERFORMANCE_MODE_FREQ      (80000000UL)  // PS3 high power clock frequency
-#define PS3_POWERSAVE_MODE_FREQ        (40000000UL)  // PS3 low power clock frequency
 
 LOG_MODULE_REGISTER(siwx91x_aon_clock, CONFIG_CLOCK_CONTROL_LOG_LEVEL);
 
-typedef enum HP_REF_CLK {
-	HP_REF_CLK_DISABLED = 0,
-	HP_REF_ULP_MHZ_RC_BYP_CLK = 1,
-	HP_REF_ULP_MHZ_RC_CLK = 2,
-	HP_REF_EXT_40MHZ_CLK = 3,
-} HP_REF_CLK_T;
-
-typedef enum ULP_REF_CLK {
-	ULP_REF_CLK_DISABLED = 0,
-	ULP_REF_ULP_MHZ_RC_BYP_CLK = 1,
-	ULP_REF_ULP_MHZ_RC_CLK = 2,
-	ULP_REF_EXT_40MHZ_CLK = 3,
-} ULP_REF_CLK_T;
-
-typedef enum M4_SOC_CLK {
-	M4_ULP_REF_CLK = 0,
-	M4_RESERVED_CLK = 1,
-	M4_SOC_PLL_CLK = 2,
-	M4_MODEM_PLL_CLK1 = 3,
-	M4_INTF_PLL_CLK = 4,
-	M4_SLEEP_CLK = 5,
-} M4_SOC_CLK_T;
-
-typedef enum PLL_CLK {
-	SOC_PLL_CLK = 0,
-	INTF_PLL_CLK = 1,
-	I2S_PLL_CLK = 2,
-	MODEM_PLL_CLK = 3,
-} PLL_CLK_T;
-
-typedef enum PLL_REF_CLK {
-	PLL_REF_CLK_XTAL = 0,
-	PLL_REF_CLK_RC = 1,
-} PLL_REF_CLK_T;
-
-struct siwx91x_aon_clock_data {
-	uint32_t enable;
+struct siwx91x_aon_clock_config {
+	MCU_FSM_Type *fsm_reg;
+	MCU_AON_Type *aon_reg;
+	struct silabs_siwx91x_clock_control_config *aon_clk_mux;
+	size_t aon_clk_mux_count;
 };
 
-static void siwx91x_aon_clock_request_xtal_to_nwp(void)
-{
-	/* Will be use in the futur when communication will be clearer*/
-	__maybe_unused const struct device *nwp_dev = DEVICE_DT_GET(DT_NODELABEL(nwp));
+const static struct {
+	uint32_t clkid;
+	uint32_t ref_clkid;
+	uint32_t reg_value;
+} clk_reg_map[] = {
+	/*clockid             ref_clkid             reg_value                              */
+	/*   |                     |                      |                                  */
+	{ SIWX91X_CLK_HP_REF,      0,                     0 }, 
+	{ SIWX91X_CLK_HP_REF,      SIWX91X_CLK_RC_MHZ,    1 }, /* ULP_MHZ_RC_BYP_CLK         */
+	{ SIWX91X_CLK_HP_REF,      SIWX91X_CLK_RC_MHZ,    2 }, /* ULP_MHZ_RC_CLK             */
+	{ SIWX91X_CLK_HP_REF,      SIWX91X_CLK_XTAL_MHZ,  3 }, /* EXT_40MHZ_CLK              */
+	{ SIWX91X_CLK_ULP_REF,     0,		          0 }, 
+	{ SIWX91X_CLK_ULP_REF,     SIWX91X_CLK_RC_MHZ,    1 }, /* ULP_REF_ULP_MHZ_RC_BYP_CLK */
+	{ SIWX91X_CLK_ULP_REF,     SIWX91X_CLK_RC_MHZ,    2 }, /* ULP_REF_ULP_MHZ_RC_CLK     */
+	{ SIWX91X_CLK_ULP_REF,     SIWX91X_CLK_XTAL_MHZ,  3 }, /* ULPSS_40MHZ_CLK            */
+	{ SIWX91X_CLK_UULP_HF_REF, 0,                     0 }, /* FSM_NO_CLOCK               */
+	{ SIWX91X_CLK_UULP_HF_REF, SIWX91X_CLK_RC_MHZ,    2 }, /* FSM_MHZ_RC                 */
+	{ SIWX91X_CLK_UULP_LF_REF, SIWX91X_CLK_RC_KHZ,    2 }, /* KHZ_RC_CLK_SEL             */
+	{ SIWX91X_CLK_UULP_LF_REF, SIWX91X_CLK_XTAL_KHZ,  4 }, /* KHZ_XTAL_CLK_SEL           */
+	{ SIWX91X_CLK_SYSRTC,      SIWX91X_CLK_RC_KHZ,    4 }, /* KHZ_RC_CLK_SEL             */
+	{ SIWX91X_CLK_SYSRTC,      SIWX91X_CLK_XTAL_KHZ,  8 }, /* KHZ_XTAL_CLK_SEL           */
+};
 
-	/* Should be something like this function but need to call NWP device API in the futur*/
+static uint32_t siwx91x_aon_clock_get_reg(uint32_t clockid, uint32_t ref_clkid)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(clk_reg_map); i++) {
+		if (clockid == clk_reg_map[i].clkid && ref_clkid == clk_reg_map[i].ref_clkid) {
+			return clk_reg_map[i].reg_value;
+		}
+	}
+	/* Need to return an proper error when no matching clock configuration is found - this
+	 * should never happens if the clock configuration is valid so maybe assert ? 
+	 */
+	return 0;
+}
+
+static uint32_t siwx91x_aon_clock_get_ref_clock(uint32_t clockid, uint32_t reg_value)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(clk_reg_map); i++) {
+		if (clockid == clk_reg_map[i].clkid && reg_value == clk_reg_map[i].reg_value) {
+			return clk_reg_map[i].ref_clkid;
+		}
+	}
+	return SIWX91X_CLK_INVALID;
+}
+
+static bool siwx91x_aon_clk_valid(uint32_t clockid, uint32_t ref_clkid)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(clk_reg_map); i++) {
+		if (clockid == clk_reg_map[i].clkid && ref_clkid == clk_reg_map[i].ref_clkid) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void siwx91x_aon_clock_request_xtal_to_nwp(void)
+{
+	__maybe_unused const struct device *nwp_dev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(nwp));
+
 	if (nwp_dev) {
 		LOG_DBG("Requesting XTAL clock from NWP");
+		/* need to call nwp api */
 		sli_si91x_xtal_turn_on_request_from_m4_to_TA();
-	} else {
-		LOG_ERR("NWP device not found, cannot request XTAL clock");
 	}
+
 	return;
 }
 
-static int siwx91x_hp_ref_clk_config(HP_REF_CLK_T clkSource)
+int siwx91x_aon_clk_config(const struct device *dev,
+			   struct silabs_siwx91x_clock_control_config *mux)
 {
-	switch (clkSource) {
-	case HP_REF_CLK_DISABLED:
-		MCU_FSM->MCU_FSM_REF_CLK_REG_b.M4SS_REF_CLK_SEL = clkSource;
+	const struct siwx91x_aon_clock_config *cfg = dev->config;
+
+	switch (mux->clkid) {
+	case SIWX91X_CLK_HP_REF:
+		cfg->fsm_reg->MCU_FSM_REF_CLK_REG_b.M4SS_REF_CLK_SEL = siwx91x_aon_clock_get_reg(mux->clkid, mux->ref_clkid);
+
+		/* In Wiseconnect, waiting for ulp ref clock change */
+		/* M4CLK in Hardcoded because we cannot call HP clock driver since
+		 * it is not initialized yet.
+		 */
+		while ((M4CLK->PLL_STAT_REG_b.M4_SOC_CLK_SWITCHED) != true)
+			;
+		
 		break;
-	case HP_REF_ULP_MHZ_RC_BYP_CLK:
-		MCU_FSM->MCU_FSM_REF_CLK_REG_b.M4SS_REF_CLK_SEL = clkSource;
-		break;
-	case HP_REF_ULP_MHZ_RC_CLK:
-		MCU_FSM->MCU_FSM_REF_CLK_REG_b.M4SS_REF_CLK_SEL = clkSource;
-		break;
-	case HP_REF_EXT_40MHZ_CLK:
-		MCU_FSM->MCU_FSM_REF_CLK_REG_b.M4SS_REF_CLK_SEL = clkSource;
-		break;
-	default:
-		return -EINVAL;
-	}
+	case SIWX91X_CLK_ULP_REF:
+		cfg->fsm_reg->MCU_FSM_REF_CLK_REG_b.ULPSS_REF_CLK_SEL_b = siwx91x_aon_clock_get_reg(mux->clkid, mux->ref_clkid);
 
-	/* wait for clock switched - before they are waiting for the pll - ulp ref clock change ?*/
-	// while ((pCLK->PLL_STAT_REG_b.ULP_REF_CLK_SWITCHED) != true)
-	// 	;
-	while ((M4CLK->PLL_STAT_REG_b.M4_SOC_CLK_SWITCHED) != true)
-		;
-
-	return 0;
-}
-
-static int siwx91x_ulp_ref_clk_config(ULP_REF_CLK_T clkSource)
-{
-	switch (clkSource) {
-	case ULP_REF_CLK_DISABLED:
-		MCU_FSM->MCU_FSM_REF_CLK_REG_b.ULPSS_REF_CLK_SEL_b = clkSource;
-		break;
-	case ULP_REF_ULP_MHZ_RC_BYP_CLK:
-		MCU_FSM->MCU_FSM_REF_CLK_REG_b.ULPSS_REF_CLK_SEL_b = clkSource;
-		break;
-	case ULP_REF_ULP_MHZ_RC_CLK:
-		MCU_FSM->MCU_FSM_REF_CLK_REG_b.ULPSS_REF_CLK_SEL_b = clkSource;
-		break;
-	case ULP_REF_EXT_40MHZ_CLK:
-		MCU_FSM->MCU_FSM_REF_CLK_REG_b.ULPSS_REF_CLK_SEL_b = clkSource;
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	/* not done before */
-	while ((M4CLK->PLL_STAT_REG_b.ULP_REF_CLK_SWITCHED) != true)
-		;
-
-	return 0;
-}
-
-static int siwx91x_check_pll_lock(PLL_CLK_T clk)
-{
-	int err = 0;
-
-	switch (clk) {
-	case SOC_PLL_CLK:
-		if (M4CLK->PLL_STAT_REG_b.SOCPLL_LOCK != 1) {
-			err = -EINVAL;
-		}
-		break;
-	case INTF_PLL_CLK:
-		if (M4CLK->PLL_STAT_REG_b.INTFPLL_LOCK != 1) {
-			err = -EINVAL;
-		}
-		break;
-	case I2S_PLL_CLK:
-		if (M4CLK->PLL_STAT_REG_b.I2SPLL_LOCK != 1) {
-			err = -EINVAL;
-		}
-		break;
-	case MODEM_PLL_CLK:
-		if (M4CLK->PLL_STAT_REG_b.MODEMPLL_LOCK != 1) {
-			err = -EINVAL;
-		}
-		break;
-	}
-	return err;
-}
-
-static int siwx91x_m4_soc_clk_config(M4_SOC_CLK_T clkSource, uint32_t divFactor)
-{
-	/* check valid parameters */
-	if (divFactor >= SOC_MAX_CLK_DIVISION_FACTOR) {
-		return -EINVAL;
-	}
-
-	/* Added for MCU 100 MHz variant mode setting
-	 * Clock will be max/2 in this mode - Legacy
-	 */
-	// if (MCU_RET->CHIP_CONFIG_MCU_READ_b.LIMIT_M4_FREQ_110MHZ_b == 1) {
-	//	divFactor = divFactor / 2;
-	// }
-
-	switch (clkSource) {
-
-	case M4_ULP_REF_CLK:
-		M4CLK->CLK_CONFIG_REG5_b.M4_SOC_CLK_SEL = clkSource;
-		break;
-
-	case M4_SOC_PLL_CLK:
-		if (siwx91x_check_pll_lock(SOC_PLL_CLK) != 0) {
-			return -EINVAL;
-		}
-		M4CLK->CLK_CONFIG_REG5_b.M4_SOC_CLK_SEL = clkSource;
-		break;
-
-	case M4_MODEM_PLL_CLK1:
-		if (siwx91x_check_pll_lock(MODEM_PLL_CLK) != 0) {
-			return -EINVAL;
-		}
-		M4CLK->CLK_CONFIG_REG5_b.M4_SOC_CLK_SEL = clkSource;
-		break;
-
-	case M4_INTF_PLL_CLK:
-		if (siwx91x_check_pll_lock(INTF_PLL_CLK) != 0) {
-			return -EINVAL;
-		}
-		M4CLK->CLK_CONFIG_REG5_b.M4_SOC_CLK_SEL = clkSource;
-		break;
-
-	case M4_SLEEP_CLK:
-		/* Check clock is present is or not before switching */
-		if (ULPCLK->M4LP_CTRL_REG_b.ULP_M4_CORE_CLK_ENABLE_b == 1) {
-			/* Update the clock MUX */
-			M4CLK->CLK_CONFIG_REG5_b.M4_SOC_CLK_SEL = clkSource;
-		} else {
-			return -EINVAL;
-		}
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	/* wait for clock switched */
-	while ((M4CLK->PLL_STAT_REG_b.M4_SOC_CLK_SWITCHED) != 1)
-		;
-
-	/* update the division factor */
-	M4CLK->CLK_CONFIG_REG5_b.M4_SOC_CLK_DIV_FAC = (unsigned int)(divFactor & 0x3F);
-
-	return 0;
-}
-
-static int siwx91x_hp_set_pll_freq(PLL_CLK_T pll_clk, uint32_t pll_freq, PLL_REF_CLK_T pll_ref_clk)
-{
-	rsi_error_t ret = RSI_OK;
-
-	// Return the error code if frequency is more than 180MHz
-	if (pll_freq > MAX_PLL_FREQUENCY) {
-		return SL_STATUS_INVALID_PARAMETER;
-	}
-	// Configure the registers for clock more than 120MHz in PS4
-	if (pll_freq >= PLL_PREFETCH_LIMIT) {
-		RSI_PS_PS4SetRegisters();
-	}
-
-	switch (pll_clk) {
-	case SOC_PLL_CLK:
-		// Configure SOC-PLL lock settings before configuring SOC PLL clock
-		RSI_CLK_SocPllLockConfig(MANUAL_LOCK, BYPASS_MANUAL_LOCK, SOC_PLL_MM_COUNT_LIMIT);
-
-		/* Turn ON the SOC_PLL */
-		RSI_CLK_SocPllTurnOn();
-
-		if (pll_ref_clk == PLL_REF_CLK_XTAL) {
-			siwx91x_aon_clock_request_xtal_to_nwp();
-			PLL_REF_CLK_CONFIG_REG &= SELECT_XTAL_MHZ_CLOCK;
-		}
-
-		SPI_MEM_MAP_PLL(SOC_PLL_500_CTRL_REG9) = 0xD900;
-
-		ret = clk_set_soc_pll_freq(M4CLK, pll_freq, 40000000);
-		if (ret != RSI_OK) {
-			return ret;
-		}
-		break;
-
-	case INTF_PLL_CLK:
-		/* TurnON the INTF_PLL */
-		RSI_CLK_IntfPLLTurnOn();
-
-		if (pll_ref_clk == PLL_REF_CLK_XTAL) {
-			siwx91x_aon_clock_request_xtal_to_nwp();
-			PLL_REF_CLK_CONFIG_REG &= SELECT_XTAL_MHZ_CLOCK;
-		}
-
-		SPI_MEM_MAP_PLL(INTF_PLL_500_CTRL_REG9) = 0xD900;
-
-		ret = clk_set_intf_pll_freq(M4CLK, pll_freq, 40000000);
-		if (ret != RSI_OK) {
-			return ret;
-		}
-		break;
-
-	case I2S_PLL_CLK:
-		/* TurnON the I2S_PLL */
-		RSI_CLK_I2sPllTurnOn();
-
-		/*  Notify NWP that M4 requires XTAL clock source */
-		sli_si91x_xtal_turn_on_request_from_m4_to_TA();
-
-		SPI_MEM_MAP_PLL(I2S_PLL_CTRL_REG9) = 0xD900;
-
-		clk_set_i2s_pll_freq(M4CLK, pll_freq, 40000000);
-
-		break;
-
-	default:
-		break;
-	}
-
-	return ret;
-}
-
-static int siwx91x_hp_set_m4_core_clk(M4_SOC_CLK_T clk_source, uint32_t pll_freq)
-{
-	int err;
-
-	// PLL reference clock set to XTAL_CLK for PLL configuration
-	uint32_t pll_ref_clk = PLL_REF_CLK_XTAL;
-
-	// Configure the registers for clock less than 120MHz
-	if (pll_freq < PLL_PREFETCH_LIMIT) {
-		RSI_PS_PS4ClearRegisters();
-	}
-
-	// Changing M4 SOC clock to M4_ULP_REF_CLK
-	err = siwx91x_m4_soc_clk_config(M4_ULP_REF_CLK, 0);
-
-	// Configure the required PLL Clocks with desired frequency before configuring it to M4 Core
-	if (clk_source == M4_ULP_REF_CLK) {
-		UNUSED_PARAMETER(pll_freq);
-		return err;
-	} else if (clk_source == M4_INTF_PLL_CLK) {
-		err = siwx91x_hp_set_pll_freq(INTF_PLL_CLK, pll_freq, pll_ref_clk);
-	} else if (clk_source == M4_SOC_PLL_CLK) {
-		err = siwx91x_hp_set_pll_freq(SOC_PLL_CLK, pll_freq, pll_ref_clk);
-	}
-
-	if (err != 0) {
-		return err;
-	}
-
-	err = siwx91x_m4_soc_clk_config(clk_source, 0);
-
-	if (!IS_ENABLED(CONFIG_TICKLESS_KERNEL)) {
-		// Reconfigure the system tick timer after changing the core clock
-		SysTick_Config(SystemCoreClock / 1000);
-	}
-
-	return err;
-}
-
-/*******************************************************************************
- * Configure clocks as per sleep state
- * Switch Subsystems' Ref clocks to MHz RC
- * Set M4 SOC and QSPI2 clock to Ref clock
- ******************************************************************************/
-int config_sleep_clks(void)
-{
-	int ret = 0;
-
-	// Change ref clocks to RC clock before moving to PS2/Sleep and not requested from PS2
-	if (sl_si91x_power_manager_get_current_state() != SL_SI91X_POWER_MANAGER_PS2) {
-		// Change Subsystems' ref clocks from 40MHz XTAL to MHz RC
-		siwx91x_hp_ref_clk_config(HP_REF_ULP_MHZ_RC_CLK);
-		siwx91x_ulp_ref_clk_config(ULP_REF_ULP_MHZ_RC_CLK);
-
-		// Configure M4 source to ULP REF clock
-		ret = siwx91x_hp_set_m4_core_clk(M4_ULP_REF_CLK, 0);
-		if (ret != 0) {
-			return ret;
-		}
-
-		RSI_CLK_QspiClkConfig(M4CLK, QSPI_ULPREFCLK, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN,
-				    QSPI_DIV_FACTOR);
-
-		RSI_CLK_Qspi2ClkConfig(M4CLK, QSPI_ULPREFCLK, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN,
-				      QSPI_DIV_FACTOR);
-	}
-
-	return ret;
-}
-
-int sli_si91x_config_clocks_to_mhz_rc(void)
-{
-	if (!(M4_ULP_SLP_STATUS_REG & ULP_MODE_SWITCHED_NPSS)) {
-		// Change Subsystems' ref clocks from 40MHz XTAL to MHz RC
-		MCU_FSM->MCU_FSM_REF_CLK_REG_b.M4SS_REF_CLK_SEL = ULP_MHZ_RC_CLK;
-		MCU_FSM->MCU_FSM_REF_CLK_REG_b.ULPSS_REF_CLK_SEL_b = ULPSS_ULP_MHZ_RC_CLK;
-		/*wait for clock switched*/
+		/* Not done in Wiseconnect */
+		/* M4CLK in Hardcoded because we cannot call HP clock driver since
+		 * it is not initialized yet.
+		 */
 		while ((M4CLK->PLL_STAT_REG_b.ULP_REF_CLK_SWITCHED) != true)
 			;
-		// Configure M4 source to ULP REF clock
-		M4CLK->CLK_CONFIG_REG5_b.M4_SOC_CLK_SEL = M4_ULPREFCLK;
-
-		clk_qspi_clk_config(M4CLK, QSPI_ULPREFCLK, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN,
-				    QSPI_DIV_FACTOR);
-
-		clk_qspi_2_clk_config(M4CLK, QSPI_ULPREFCLK, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN,
-				      QSPI_DIV_FACTOR);
-	}
-	return 0;
-}
-
-sl_status_t sli_si91x_clock_manager_config_clks_on_ps_change(sl_power_state_t power_state,
-							     boolean_t power_mode)
-{
-	sl_status_t sli_status = SL_STATUS_OK;
-	uint32_t soc_pll_freq;
-	QSPI_CLK_SRC_SEL_T qspi_clk_source = QSPI_ULPREFCLK;
-	uint8_t qspi_div_fac = QSPI_DIV_FACTOR;
-	uint32_t intf_pll_freq;
-
-	switch (power_state) {
-	case SL_SI91X_POWER_MANAGER_PS4:
-		/* Configure Ref clocks to 40MHz crystal */
-		siwx91x_aon_clock_request_xtal_to_nwp();
-		siwx91x_hp_ref_clk_config(HP_REF_EXT_40MHZ_CLK);
-		siwx91x_ulp_ref_clk_config(ULP_REF_EXT_40MHZ_CLK);
-
-		// Set SOC PLL and configure M4 source to SOC PLL based on current state and mode
-		soc_pll_freq = power_mode ? PS4_PERFORMANCE_MODE_SOC_FREQ : PS4_POWERSAVE_MODE_FREQ;
-
-		siwx91x_hp_set_m4_core_clk(M4_SOC_PLL_CLK, soc_pll_freq);
-
-		intf_pll_freq =
-			power_mode ? PS4_PERFORMANCE_MODE_INTF_FREQ : PS4_POWERSAVE_MODE_FREQ;
-
-		siwx91x_hp_set_pll_freq(INTF_PLL_CLK, intf_pll_freq, PLL_REF_CLK_XTAL);
-
-		if (intf_pll_freq == PS4_PERFORMANCE_MODE_INTF_FREQ) {
-			qspi_clk_source = QSPI_INTFPLLCLK;
-		} else {
-			qspi_clk_source = QSPI_ULPREFCLK;
-		}
-
-		clk_qspi_clk_config(M4CLK, qspi_clk_source, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN,
-				    qspi_div_fac);
-
-		clk_qspi_2_clk_config(M4CLK, qspi_clk_source, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN,
-				      qspi_div_fac);
-
-		break;
-
-	case SL_SI91X_POWER_MANAGER_PS3:
-		/* Configure Ref clocks to 40MHz crystal */
-		siwx91x_aon_clock_request_xtal_to_nwp();
-		siwx91x_hp_ref_clk_config(HP_REF_EXT_40MHZ_CLK);
-		siwx91x_ulp_ref_clk_config(ULP_REF_EXT_40MHZ_CLK);
-
-		// configure M4 source frequency based on current state and mode
-		soc_pll_freq = power_mode ? PS3_PERFORMANCE_MODE_FREQ : PS3_POWERSAVE_MODE_FREQ;
-		if (power_mode) {
-			siwx91x_hp_set_m4_core_clk(M4_SOC_PLL_CLK, soc_pll_freq);
-		} else {
-			siwx91x_hp_set_m4_core_clk(M4_ULP_REF_CLK, 0);
-			//siwx91x_hp_set_pll_freq(SOC_PLL_CLK, soc_pll_freq, PLL_REF_CLK_XTAL);
-		}
-
-		// Set INTF PLL based on current state and mode
-		intf_pll_freq = power_mode ? PS3_PERFORMANCE_MODE_FREQ : PS3_POWERSAVE_MODE_FREQ;
 		
-		if (intf_pll_freq == PS3_PERFORMANCE_MODE_FREQ) {
-			siwx91x_hp_set_pll_freq(INTF_PLL_CLK, intf_pll_freq, PLL_REF_CLK_XTAL);
-			qspi_clk_source = QSPI_INTFPLLCLK;
-			qspi_div_fac = 1;
-		} else {
-			qspi_clk_source = QSPI_ULPREFCLK;
-			qspi_div_fac = 2;
+		break;
+	case SIWX91X_CLK_UULP_HF_REF:
+		cfg->fsm_reg->MCU_FSM_CLKS_REG_b.HF_FSM_CLK_SELECT = siwx91x_aon_clock_get_reg(mux->clkid, mux->ref_clkid);
+
+		while ((cfg->fsm_reg->MCU_FSM_CLKS_REG_b.HF_FSM_CLK_SWITCHED_SYNC) != true)
+			;
+		
+		break;
+	case SIWX91X_CLK_UULP_LF_REF:
+		cfg->aon_reg->MCUAON_KHZ_CLK_SEL_POR_RESET_STATUS_b.AON_KHZ_CLK_SEL = siwx91x_aon_clock_get_reg(mux->clkid, mux->ref_clkid);
+
+		while (cfg->aon_reg->MCUAON_KHZ_CLK_SEL_POR_RESET_STATUS_b.AON_KHZ_CLK_SEL_CLOCK_SWITCHED != 1)
+			;
+		
+		break;
+	case SIWX91X_CLK_SYSRTC:
+		cfg->aon_reg->MCUAON_KHZ_CLK_SEL_POR_RESET_STATUS_b.AON_KHZ_CLK_SEL_SYSRTC =
+			siwx91x_aon_clock_get_reg(mux->clkid, mux->ref_clkid);
+
+		while (cfg->aon_reg->MCUAON_KHZ_CLK_SEL_POR_RESET_STATUS_b
+			       .AON_KHZ_CLK_SEL_CLOCK_SWITCHED_SYSRTC != 1) {
+			;
 		}
-
-		clk_qspi_clk_config(M4CLK, qspi_clk_source, QSPI_SWALLO_EN,
-							 QSPI_ODD_DIV_EN, qspi_div_fac);
-
-
-		clk_qspi_2_clk_config(M4CLK, qspi_clk_source, QSPI_SWALLO_EN,
-							   QSPI_ODD_DIV_EN, qspi_div_fac);
-
 		break;
-
-	case SL_SI91X_POWER_MANAGER_PS2:
-		// Power modes are not applicable for PS2 state
-		UNUSED_PARAMETER(power_mode);
-
-		// Configures the clock with 20MHz
-		RSI_IPMU_M20rcOsc_TrimEfuse();
-		// Sets FSM HF frequency to 20MHz
-		RSI_PS_FsmHfFreqConfig(20);
-		// Updated the clock global variables
-		//RSI_PS_PS2UpdateClockVariable();
-
-		// The remaining clock configurations are common for PS2 and Sleep states
-		sli_status = config_sleep_clks();
-		break;
-
-	case SL_SI91X_POWER_MANAGER_SLEEP:
-		// Power modes are not applicable for Sleep state
-		UNUSED_PARAMETER(power_mode);
-
-		// Configure clocks as per sleep state
-		sli_status = config_sleep_clks();
-		break;
-
-	case SL_SI91X_POWER_MANAGER_PS1:
-	case SL_SI91X_POWER_MANAGER_PS0:
-	case SL_SI91X_POWER_MANAGER_STANDBY:
-		// Not needed for these states
-		sli_status = SL_STATUS_INVALID_STATE;
-		break;
-
 	default:
-		// If reaches here, return error code
-		sli_status = SL_STATUS_INVALID_PARAMETER;
-		break;
+		return -EINVAL;
 	}
 
-	return sli_status;
+	return 0;
 }
 
 static int siwx91x_aon_clock_on(const struct device *dev, clock_control_subsys_t sys)
 {
-	struct siwx91x_aon_clock_data *data = dev->data;
-	uintptr_t clockid = (uintptr_t)sys;
+	uint32_t clockid = (uint32_t)(uintptr_t)(sys);
 
 	switch (clockid) {
+	case SIWX91X_CLK_HP_REF:
+	case SIWX91X_CLK_ULP_REF:
+	case SIWX91X_CLK_UULP_HF_REF:
+	case SIWX91X_CLK_UULP_LF_REF:
+	case SIWX91X_CLK_SYSRTC:
 	case SIWX91X_CLK_WATCHDOG:
-		/* Both SYSRTC and WDT use LF-FSM XTAL; this call waits for stabilization. */
-		rsi_sysrtc_clk_set(RSI_SYSRTC_CLK_32kHz_Xtal, 0);
-		break;
 	case SIWX91X_CLK_RTC:
-		/* Already done in sl_calendar_init(). */
-		RSI_PS_NpssPeriPowerUp(SLPSS_PWRGATE_ULP_MCURTC | SLPSS_PWRGATE_ULP_TIMEPERIOD);
-		break;
+		return -EALREADY;
 	default:
 		return -EINVAL;
 	}
-
-	data->enable |= BIT(clockid);
-	return 0;
 }
 
 static int siwx91x_aon_clock_off(const struct device *dev, clock_control_subsys_t sys)
 {
-	struct siwx91x_aon_clock_data *data = dev->data;
-	uintptr_t clockid = (uintptr_t)sys;
+	uint32_t clockid = (uint32_t)(uintptr_t)(sys);
+	const struct siwx91x_aon_clock_config *cfg = dev->config;
 
 	ARG_UNUSED(dev);
 
 	switch (clockid) {
-	case SIWX91X_CLK_WATCHDOG:
-	case SIWX91X_CLK_RTC:
-		/* Not supported. */
-		return 0;
+	case SIWX91X_CLK_XTAL_MHZ:
+		cfg->fsm_reg->MCU_FSM_CLK_ENS_AND_FIRST_BOOTUP_b.MCU_ULP_40MHZ_CLK_EN_b = 0;
+		break;
+	case SIWX91X_CLK_XTAL_KHZ:
+		cfg->fsm_reg->MCU_FSM_CLK_ENS_AND_FIRST_BOOTUP_b.MCU_ULP_32KHZ_XTAL_CLK_EN_b = 0;
+		break;
+	case SIWX91X_CLK_RC_MHZ:
+		cfg->fsm_reg->MCU_FSM_CLK_ENS_AND_FIRST_BOOTUP_b.MCU_ULP_MHZ_RC_CLK_EN_b = 0;
+		break;
+	case SIWX91X_CLK_RC_KHZ:
+		cfg->fsm_reg->MCU_FSM_CLK_ENS_AND_FIRST_BOOTUP_b.MCU_ULP_32KHZ_RC_CLK_EN_b = 0;
+		break;
+	case SIWX91X_CLK_HP_REF:
+	case SIWX91X_CLK_ULP_REF:
+	case SIWX91X_CLK_UULP_HF_REF:
+	case SIWX91X_CLK_UULP_LF_REF:
+	case SIWX91X_CLK_SYSRTC: /* SYSRTC is an exception and is completely managed by sleeptimer */
+	case SIWX91X_CLK_WATCHDOG: /* no IPMU init ?*/
+	case SIWX91X_CLK_RTC: /* IPMU already done in sl_si91x_calendar_init(). */
+		return -ENOTSUP;
 	default:
 		return -EINVAL;
 	}
 
-	data->enable &= ~BIT(clockid);
 	return 0;
 }
 
-static int siwx91x_aon_clock_get_rate(const struct device *dev, clock_control_subsys_t sys,
+static int siwx91x_aon_clock_get_rate(const struct device *dev, clock_control_subsys_t clk_cfg,
 				      uint32_t *rate)
 {
-	uintptr_t clockid = (uintptr_t)sys;
+	const struct siwx91x_aon_clock_config *cfg = dev->config;
+	uint32_t clockid = (uint32_t)(clk_cfg);
+	uint32_t ret, reg, ref_clkid;
 
-	ARG_UNUSED(dev);
+	*rate = 0;
+	ref_clkid = SIWX91X_CLK_INVALID;
 
 	switch (clockid) {
+	case SIWX91X_CLK_XTAL_MHZ:
+		*rate = DT_PROP(DT_NODELABEL(xtal_mhz), clock_frequency);
+		break;
+	case SIWX91X_CLK_XTAL_KHZ:
+		*rate = DT_PROP(DT_NODELABEL(xtal_khz), clock_frequency);
+		break;
+	case SIWX91X_CLK_RC_MHZ:
+		*rate = DT_PROP(DT_NODELABEL(rc_mhz), clock_frequency);
+		break;
+	case SIWX91X_CLK_RC_KHZ:
+		*rate = DT_PROP(DT_NODELABEL(rc_khz), clock_frequency);
+		break;
+	case SIWX91X_CLK_HP_REF:
+		reg = cfg->fsm_reg->MCU_FSM_REF_CLK_REG_b.M4SS_REF_CLK_SEL;
+		ref_clkid = siwx91x_aon_clock_get_ref_clock(clockid, reg);
+		break;
+	case SIWX91X_CLK_ULP_REF:
+		reg = cfg->fsm_reg->MCU_FSM_REF_CLK_REG_b.ULPSS_REF_CLK_SEL_b;
+		ref_clkid = siwx91x_aon_clock_get_ref_clock(clockid, reg);
+		break;
+	case SIWX91X_CLK_UULP_HF_REF:
+		reg = cfg->fsm_reg->MCU_FSM_CLKS_REG_b.HF_FSM_CLK_SELECT;
+		ref_clkid = siwx91x_aon_clock_get_ref_clock(clockid, reg);
+		break;
+	case SIWX91X_CLK_UULP_LF_REF:
+		reg = cfg->aon_reg->MCUAON_KHZ_CLK_SEL_POR_RESET_STATUS_b.AON_KHZ_CLK_SEL;
+		ref_clkid = siwx91x_aon_clock_get_ref_clock(clockid, reg);
+		break;
+	case SIWX91X_CLK_SYSRTC:
+		reg = cfg->aon_reg->MCUAON_KHZ_CLK_SEL_POR_RESET_STATUS_b.AON_KHZ_CLK_SEL_SYSRTC;
+		ref_clkid = siwx91x_aon_clock_get_ref_clock(SIWX91X_CLK_SYSRTC, reg);
+		break;
 	case SIWX91X_CLK_WATCHDOG:
-		*rate = LF_FSM_CLOCK_FREQUENCY;
-		return 0;
+	case SIWX91X_CLK_RTC:
+		/* RTC and WATCHDOG are linked to UULP_LF_REF */
+		ref_clkid = SIWX91X_CLK_UULP_LF_REF;
+		break;
 	default:
 		return -EINVAL;
 	}
+
+	if (*rate == 0) {
+		ret = siwx91x_aon_clock_get_rate(dev, (clock_control_subsys_t)(uintptr_t)ref_clkid, rate);
+		if (ret) {
+			return ret;
+		}
+	}
+
+	return 0;
 }
 
 static int siwx91x_aon_clock_set_rate(const struct device *dev, clock_control_subsys_t sys,
@@ -588,131 +277,108 @@ static int siwx91x_aon_clock_set_rate(const struct device *dev, clock_control_su
 	ARG_UNUSED(dev);
 	ARG_UNUSED(sys);
 	ARG_UNUSED(raw_rate);
-	return -EINVAL;
+	return -ENOTSUP;	
+}
+
+static int siwx91x_aon_clock_configure(const struct device *dev, clock_control_subsys_t sys,
+				       void *data)
+{
+	uint32_t clockid = (uint32_t)(uintptr_t)(sys);
+	struct silabs_siwx91x_clock_control_config *cfg = data;
+
+	if (cfg->clkid != clockid) {
+		return -EINVAL;
+	}
+
+	if (!siwx91x_aon_clk_valid(cfg->clkid, cfg->ref_clkid)) {
+		return -EINVAL;
+	}
+
+	return siwx91x_aon_clk_config(dev, cfg);
 }
 
 static enum clock_control_status siwx91x_aon_clock_get_status(const struct device *dev,
-							      clock_control_subsys_t sys)
+							      clock_control_subsys_t clk_cfg)
 {
-	struct siwx91x_aon_clock_data *data = dev->data;
-	uintptr_t clockid = (uintptr_t)sys;
+	const struct siwx91x_aon_clock_config *cfg = dev->config;
+	uint32_t clkid = (uint32_t)(uintptr_t)(clk_cfg);
+	uint32_t reg;
 
-	if (data->enable & BIT(clockid)) {
-		return CLOCK_CONTROL_STATUS_ON;
+	switch (clkid) {
+	case SIWX91X_CLK_XTAL_MHZ:
+		reg = cfg->fsm_reg->MCU_FSM_CLK_ENS_AND_FIRST_BOOTUP_b.MCU_ULP_40MHZ_CLK_EN_b;
+		break;
+	case SIWX91X_CLK_XTAL_KHZ:
+		reg = cfg->fsm_reg->MCU_FSM_CLK_ENS_AND_FIRST_BOOTUP_b.MCU_ULP_32KHZ_XTAL_CLK_EN_b;
+		break;
+	case SIWX91X_CLK_RC_MHZ:
+		reg = cfg->fsm_reg->MCU_FSM_CLK_ENS_AND_FIRST_BOOTUP_b.MCU_ULP_MHZ_RC_CLK_EN_b;
+		break;
+	case SIWX91X_CLK_RC_KHZ:
+		reg = cfg->fsm_reg->MCU_FSM_CLK_ENS_AND_FIRST_BOOTUP_b.MCU_ULP_32KHZ_RC_CLK_EN_b;
+		break;
+	case SIWX91X_CLK_HP_REF:
+	case SIWX91X_CLK_ULP_REF:
+	case SIWX91X_CLK_UULP_HF_REF:
+	case SIWX91X_CLK_UULP_LF_REF:
+	case SIWX91X_CLK_SYSRTC:
+		reg = 1;
+		break;
+	default:
+		return -EINVAL;
 	}
 
-	return CLOCK_CONTROL_STATUS_OFF;
+	return reg ? CLOCK_CONTROL_STATUS_ON : CLOCK_CONTROL_STATUS_OFF;
 }
 
 static int siwx91x_aon_clock_init(const struct device *dev)
 {
-	ARG_UNUSED(dev);
-	int ret;
+	const struct siwx91x_aon_clock_config *cfg = dev->config;
 
-	/*Initialize IPMU and MCU FSM blocks - Legacy Link*/
-	RSI_Ipmu_Init();
+	siwx91x_aon_clock_request_xtal_to_nwp();
 
-	/* AON */
-	/*Configuring the ULP reference clock to 40MHz, as this frequency is required by the
-	 * temperature sensor for chip supply mode configuration.*/
-	MCU_FSM->MCU_FSM_REF_CLK_REG_b.ULPSS_REF_CLK_SEL_b = ULPSS_40MHZ_CLK;
+	for (size_t i = 0; i < cfg->aon_clk_mux_count; i++) {
+		struct silabs_siwx91x_clock_control_config *mux = &cfg->aon_clk_mux[i];
 
-	/* maybe after sys init ?*/
-	/* IPMU mode configuration based on temperature - Legacy */
-	RSI_Configure_Ipmu_Mode();
+		if (!siwx91x_aon_clk_valid(mux->clkid, mux->ref_clkid)) {
+			__ASSERT(false, "Invalid AON route clkid %u ref %u", mux->clkid,
+				 mux->ref_clkid);
+			continue;
+		}
 
-	/* HP */
-	/*Default clock mux configurations */
-	M4CLK->CLK_ENABLE_SET_REG3 = M4_SOC_CLK_FOR_OTHER_ENABLE;
-
-	/* AON */
-	/* NWP clock is selected as 40MHZ clock from MCU -- why not the ULP_MHZ_BYPASS_RC ?*/
-	MCU_FSM->MCU_FSM_REF_CLK_REG_b.TASS_REF_CLK_SEL = ULP_MHZ_RC_CLK;
-
-	/* Configuring MCU FSM clock for BG_PMU */
-	RSI_IPMU_ClockMuxSel(2);
-
-	/* Configuring 32kHz Clock for LF-FSM  */
-	/* AON */
-	MCU_AON->MCUAON_KHZ_CLK_SEL_POR_RESET_STATUS_b.AON_KHZ_CLK_SEL = KHZ_XTAL_CLK_SEL;
-	while (MCU_AON->MCUAON_KHZ_CLK_SEL_POR_RESET_STATUS_b.AON_KHZ_CLK_SEL_CLOCK_SWITCHED != 1)
-		;
-
-	/* Configuring RC-MHz Clock for HF-FSM */
-	/* AON */
-	MCU_FSM->MCU_FSM_CLKS_REG_b.HF_FSM_CLK_SELECT = FSM_MHZ_RC;
-	while (MCU_FSM->MCU_FSM_CLKS_REG_b.HF_FSM_CLK_SWITCHED_SYNC != 1)
-		;
-
-	/* XTAL control pointed to Software and  XTAL is Turned-Off from M4 */
-	/* old RSI_ConfigXtal*/
-	BATT_FF->MCU_FSM_CTRL_BYPASS_b.MCU_XTAL_EN_40MHZ_BYPASS =
-		(unsigned int)((XTAL_DISABLE_FROM_M4 & 0x1) & 0x01);
-	BATT_FF->MCU_FSM_CTRL_BYPASS_b.MCU_XTAL_EN_40MHZ_BYPASS_CTRL =
-		(unsigned int)((XTAL_IS_IN_SW_CTRL_FROM_M4 & 0x1) & 0x01);
-
-	/* Before NWP is going to power save mode ,set m4ss_ref_clk_mux_ctrl ,
-	tass_ref_clk_mux_ctrl, AON domain power supply controls from NWP to M4 */
-	RSI_Set_Cntrls_To_M4();
-
-	// need to properly check if the xtal is used in the dt.
-	bool xtal_is_used = true;
-
-	// in case we use the XTAL, request XTAL to the NWP
-	if (xtal_is_used) {
-		siwx91x_aon_clock_request_xtal_to_nwp();
+		if (siwx91x_aon_clk_config(dev, mux) != 0) {
+			LOG_ERR("AON route %zu (clkid %u) failed", i, mux->clkid);
+			return -EIO;
+		}
 	}
 
-	/* Configure MCU_HP_REF_CLOCK  WTF ? want to set XTAL as HP_REF_CLOCK_SOURCE*/
-	/* Since they are not configurin M4_SOC_CLK_SEL, M4_SOC_CLK_SEL will be zeroed and then with
-	 * used the M4SS_REF_CLK_SEL to select the source for HP_REF_CLOCK. So configuring
-	 * M4SS_REF_CLK_SEL to use XTAL will make HP_REF_CLOCK to use XTAL as source
-	 */
-	// RSI_CLK_M4ssRefClkConfig(M4CLK, EXT_40MHZ_CLK);
-	siwx91x_hp_ref_clk_config(HP_REF_EXT_40MHZ_CLK);
+	LOG_INF("AON clock initialized");
+	//Print all clock rates with corresponding clockid
+	uint32_t rate;
+	siwx91x_aon_clock_get_rate(dev, (clock_control_subsys_t)SIWX91X_CLK_XTAL_MHZ, &rate);
+	LOG_INF("%s clock rate: %u", "XTAL_MHZ", rate);
+	siwx91x_aon_clock_get_rate(dev, (clock_control_subsys_t)SIWX91X_CLK_XTAL_KHZ, &rate);
+	LOG_INF("%s clock rate: %u", "XTAL_KHZ", rate);
+	siwx91x_aon_clock_get_rate(dev, (clock_control_subsys_t)SIWX91X_CLK_RC_MHZ, &rate);
+	LOG_INF("%s clock rate: %u", "RC_MHZ", rate);
+	siwx91x_aon_clock_get_rate(dev, (clock_control_subsys_t)SIWX91X_CLK_RC_KHZ, &rate);
+	LOG_INF("%s clock rate: %u", "RC_KHZ", rate);
+	siwx91x_aon_clock_get_rate(dev, (clock_control_subsys_t)SIWX91X_CLK_HP_REF, &rate);
+	LOG_INF("%s clock rate: %u", "HP_REF", rate);
+	siwx91x_aon_clock_get_rate(dev, (clock_control_subsys_t)SIWX91X_CLK_ULP_REF, &rate);
+	LOG_INF("%s clock rate: %u", "ULP_REF", rate);
+	siwx91x_aon_clock_get_rate(dev, (clock_control_subsys_t)SIWX91X_CLK_UULP_HF_REF, &rate);
+	LOG_INF("%s clock rate: %u", "UULP_HF_REF", rate);
+	siwx91x_aon_clock_get_rate(dev, (clock_control_subsys_t)SIWX91X_CLK_UULP_LF_REF, &rate);
+	LOG_INF("%s clock rate: %u", "UULP_LF_REF", rate);
+	siwx91x_aon_clock_get_rate(dev, (clock_control_subsys_t)SIWX91X_CLK_SYSRTC, &rate);
+	LOG_INF("%s clock rate: %u", "SYSRTC", rate);
+	siwx91x_aon_clock_get_rate(dev, (clock_control_subsys_t)SIWX91X_CLK_WATCHDOG, &rate);
+	LOG_INF("%s clock rate: %u", "WATCHDOG", rate);
+	siwx91x_aon_clock_get_rate(dev, (clock_control_subsys_t)SIWX91X_CLK_RTC, &rate);
+	LOG_INF("%s clock rate: %u", "RTC", rate);
 
-	/* Configure MCU_ULP_REF_CLOCK*/
-	// RSI_ULPSS_RefClkConfig(ULPSS_40MHZ_CLK);
-	siwx91x_ulp_ref_clk_config(ULP_REF_EXT_40MHZ_CLK);
-
-	// Core Clock runs at 180MHz SOC PLL Clock
-	// This function configure the PLL to use the XTAL as reference and set the frequency of SOC
-	// PLL 180MHz. It also set the M4 clock source to SOC PLL.
-	ret = siwx91x_hp_set_m4_core_clk(M4_SOC_PLL_CLK, SOC_PLL_FREQ);
-	if (ret != 0) {
-		return ret;
-	}
-
-	ret = siwx91x_hp_set_pll_freq(INTF_PLL_CLK, INTF_PLL_FREQUENCY, PLL_REF_CLK_XTAL);
-	if (ret != 0) {
-		return ret;
-	}
-
-	/* need to clock the flash, maybe in the flash driver ?*/
-	clk_qspi_clk_config(M4CLK, QSPI_INTFPLLCLK, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN,
-			    QSPI_DIV_FACTOR);
-	/* needed to clock the psram, maybe in the psram driver ? */
-	clk_qspi_2_clk_config(M4CLK, QSPI_INTFPLLCLK, QSPI_SWALLO_EN, QSPI_ODD_DIV_EN,
-			      QSPI2_DIV_FACTOR);
-
-	/* TODO: implement the clock out (meens using gpio driver to output the clock on a pin)
-	 * sl_si91x_clock_manager_mcu_clk_out(sl_mcu_clk_out_config.pin_config,
-	 *  					   sl_mcu_clk_out_config.clk_source,
-	 *  					   sl_mcu_clk_out_config.div_factor);
-	 */
-
-	/* Use SoC PLL at configured frequency as core clock */
-	ret = siwx91x_hp_set_m4_core_clk(M4_SOC_PLL_CLK,
-					 DT_PROP(DT_PATH(cpus, cpu_0), clock_frequency));
-
-	/* Since we are reconfiguring the INTF_PLL which is used by the Flash, need to have the
-	 * following code in ram*/
-	ret = siwx91x_hp_set_pll_freq(INTF_PLL_CLK, INTF_PLL_FREQUENCY, PLL_REF_CLK_XTAL);
-
-	/* Change the QSPI clock source to INTF_PLL */
-	clk_qspi_clk_config(M4CLK, QSPI_INTFPLLCLK, 0, 0, 1);
-
-	return 0;
+		return 0;
 }
 
 static DEVICE_API(clock_control, siwx91x_aon_clock_api) = {
@@ -720,13 +386,22 @@ static DEVICE_API(clock_control, siwx91x_aon_clock_api) = {
 	.off = siwx91x_aon_clock_off,
 	.get_rate = siwx91x_aon_clock_get_rate,
 	.set_rate = siwx91x_aon_clock_set_rate,
+	.configure = siwx91x_aon_clock_configure,
 	.get_status = siwx91x_aon_clock_get_status,
 };
 
 #define SIWX91X_AON_CLOCK_INIT(inst)                                                               \
-	static struct siwx91x_aon_clock_data siwx91x_aon_clock_data_##inst;                        \
-	DEVICE_DT_INST_DEFINE(inst, siwx91x_aon_clock_init, NULL, &siwx91x_aon_clock_data_##inst,  \
-			      NULL, PRE_KERNEL_1, CONFIG_SIWX91X_AON_CLOCK_INIT_PRIORITY,          \
-			      &siwx91x_aon_clock_api);
+	static struct silabs_siwx91x_clock_control_config aon_clk_mux_##inst[] = {                 \
+		DT_INST_FOREACH_CHILD(inst, SIWX91X_CLOCK_MANAGER_CHILD_INIT)};                    \
+	static const struct siwx91x_aon_clock_config siwx91x_aon_clock_config_##inst = {           \
+		.fsm_reg = (MCU_FSM_Type *)DT_INST_REG_ADDR_BY_NAME(inst, mcu_fsm),                \
+		.aon_reg = (MCU_AON_Type *)DT_INST_REG_ADDR_BY_NAME(inst, mcu_aon),                \
+		.aon_clk_mux = aon_clk_mux_##inst,                                                 \
+		.aon_clk_mux_count = ARRAY_SIZE(aon_clk_mux_##inst)                                \
+	};                                                                                         \
+                                                                                                   \
+	DEVICE_DT_INST_DEFINE(inst, siwx91x_aon_clock_init, NULL, NULL,                            \
+			      &siwx91x_aon_clock_config_##inst, PRE_KERNEL_1,                      \
+			      CONFIG_SIWX91X_AON_CLOCK_INIT_PRIORITY, &siwx91x_aon_clock_api);
 
 DT_INST_FOREACH_STATUS_OKAY(SIWX91X_AON_CLOCK_INIT)

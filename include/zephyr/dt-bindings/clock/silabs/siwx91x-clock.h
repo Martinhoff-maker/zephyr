@@ -24,5 +24,28 @@
 #define SIWX91X_CLK_ADC            17
 #define SIWX91X_CLK_GPDMA0         18
 #define SIWX91X_CLK_RNG            19
+#define SIWX91X_CLK_SYSRTC         20
+#define SIWX91X_CLK_XTAL_MHZ       21
+#define SIWX91X_CLK_XTAL_KHZ       22
+#define SIWX91X_CLK_RC_MHZ         23
+#define SIWX91X_CLK_RC_KHZ         24
+#define SIWX91X_CLK_HP_REF         25
+#define SIWX91X_CLK_ULP_REF        26
+#define SIWX91X_CLK_UULP_HF_REF    27
+#define SIWX91X_CLK_UULP_LF_REF    28
+#define SIWX91X_CLK_UULP_GPIO      29
+#define SIWX91X_CLK_GPIO           30
+#define SIWX91X_CLK_SOC_PLL        31
+#define SIWX91X_CLK_INTF_PLL       32
+#define SIWX91X_CLK_I2S_PLL        33
+#define SIWX91X_CLK_ULP_PROC       34
+#define SIWX91X_CLK_ULP_SSI        35
+#define SIWX91X_CLK_SLP_SENSOR     36
+#define SIWX91X_CLK_ULP_TIMER      37
+#define SIWX91X_CLK_HPULP          38
+#define SIWX91X_CLK_PLL_REF        39
+#define SIWX91X_CLK_ULP_GPIO       40
+#define SIWX91X_CLK_PSRAM          41
+#define SIWX91X_CLK_INVALID        42
 
 #endif

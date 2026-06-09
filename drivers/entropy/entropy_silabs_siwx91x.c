@@ -47,7 +47,7 @@ static int rng_siwx91x_init(const struct device *dev)
 	int ret;
 
 	ret = clock_control_on(config->clock_dev, config->clock_subsys);
-	if (ret && ret != -EALREADY) {
+	if (ret != 0 && ret != -EALREADY) {
 		return ret;
 	}
 	ret = RSI_RNG_Start(config->reg, RSI_RNG_TRUE_RANDOM);
@@ -66,7 +66,7 @@ static DEVICE_API(entropy, rng_siwx91x_api) = {
 	static const struct rng_siwx91x_config rng_siwx91x_cfg##n = {                           \
 		.reg = (HWRNG_Type *)DT_INST_REG_ADDR(n),                                       \
 		.clock_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(n)),                             \
-		.clock_subsys = (clock_control_subsys_t)DT_INST_PHA(n, clocks, clkid),          \
+		.clock_subsys = (clock_control_subsys_t)DT_INST_CLOCKS_CELL(n, clkid),                                \
 	};                                                                                      \
 	DEVICE_DT_INST_DEFINE(n, rng_siwx91x_init, NULL, NULL, &rng_siwx91x_cfg##n,             \
 			      PRE_KERNEL_1, CONFIG_ENTROPY_INIT_PRIORITY, &rng_siwx91x_api);

@@ -36,7 +36,7 @@
 struct i2s_siwx91x_config {
 	I2S0_Type *reg;
 	const struct device *clock_dev;
-	clock_control_subsys_t clock_subsys_peripheral;
+	clock_control_subsys_t clock_subsys_periph;
 	clock_control_subsys_t clock_subsys_static;
 	const struct pinctrl_dev_config *pcfg;
 	uint8_t channel_group;
@@ -525,9 +525,11 @@ static int i2s_siwx91x_param_config(const struct device *dev, enum i2s_dir dir)
 		/* Configure primary mode and bit clock frequency */
 		bit_freq = 2 * stream->cfg.frame_clk_freq * stream->cfg.word_size;
 
-		ret = clock_control_set_rate(cfg->clock_dev, cfg->clock_subsys_peripheral,
-					     &bit_freq);
-		if (ret) {
+		ret = clock_control_set_rate(cfg->clock_dev, cfg->clock_subsys_periph, &bit_freq);
+		/* Split SIWX91x clock managers may not support dynamic I2S tuning yet.
+		 * Keep legacy bring-up behavior by proceeding with current defaults.
+		 */
+		if (ret && ret != -ENOTSUP && ret != -EOPNOTSUPP) {
 			return ret;
 		}
 
@@ -545,7 +547,7 @@ static int i2s_siwx91x_param_config(const struct device *dev, enum i2s_dir dir)
 	}
 
 	ret = clock_control_on(cfg->clock_dev, cfg->clock_subsys_static);
-	if (ret) {
+	if (ret != 0 && ret != -EALREADY) {
 		return ret;
 	}
 
@@ -842,8 +844,13 @@ static int i2s_siwx91x_pm_action(const struct device *dev, enum pm_device_action
 	case PM_DEVICE_ACTION_SUSPEND:
 		break;
 	case PM_DEVICE_ACTION_TURN_ON:
-		ret = clock_control_on(cfg->clock_dev, cfg->clock_subsys_peripheral);
-		if (ret < 0 && ret != -EALREADY) {
+		ret = clock_control_on(cfg->clock_dev, cfg->clock_subsys_periph);
+		if (ret != 0 && ret != -EALREADY) {
+			return ret;
+		}
+
+		ret = clock_control_on(cfg->clock_dev, cfg->clock_subsys_static);
+		if (ret != 0 && ret != -EALREADY) {
 			return ret;
 		}
 
@@ -857,7 +864,7 @@ static int i2s_siwx91x_pm_action(const struct device *dev, enum pm_device_action
 		cfg->reg->I2S_ITER_b.TXEN = 0;
 		break;
 	case PM_DEVICE_ACTION_TURN_OFF:
-		ret = clock_control_off(cfg->clock_dev, cfg->clock_subsys_peripheral);
+		ret = clock_control_off(cfg->clock_dev, cfg->clock_subsys_periph);
 		if (ret < 0 && ret != -EALREADY) {
 			return ret;
 		}
@@ -914,10 +921,8 @@ static DEVICE_API(i2s, i2s_siwx91x_driver_api) = {
 	static const struct i2s_siwx91x_config i2s_config_##inst = {                               \
 		.reg = (I2S0_Type *)DT_INST_REG_ADDR(inst),                                        \
 		.clock_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(inst)),                             \
-		.clock_subsys_peripheral =                                                         \
-			(clock_control_subsys_t)DT_INST_CLOCKS_CELL_BY_IDX(inst, 0, clkid),        \
-		.clock_subsys_static =                                                             \
-			(clock_control_subsys_t)DT_INST_CLOCKS_CELL_BY_IDX(inst, 1, clkid),        \
+		.clock_subsys_periph = (clock_control_subsys_t)DT_INST_CLOCKS_CELL_BY_IDX(inst, 0, clkid),   \
+		.clock_subsys_static = (clock_control_subsys_t)DT_INST_CLOCKS_CELL_BY_IDX(inst, 1, clkid),                           \
 		.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(inst),                                      \
 		.channel_group = DT_INST_PROP(inst, silabs_channel_group),                         \
 	};                                                                                         \

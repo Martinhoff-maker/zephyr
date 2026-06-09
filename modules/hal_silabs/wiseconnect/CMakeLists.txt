@@ -121,8 +121,8 @@ zephyr_library_sources_ifdef(CONFIG_BT_SILABS_SIWX91X
 
 if(CONFIG_CLOCK_CONTROL_SILABS_SIWX91X OR CONFIG_PM)
   zephyr_compile_definitions(
-    ULPSS_CLOCK_ROMDRIVER_PRESENT # replace rsi_ulpss_clk.c
-    CLOCK_ROMDRIVER_PRESENT # replace rsi_pll.c
+    #ULPSS_CLOCK_ROMDRIVER_PRESENT # replace rsi_ulpss_clk.c
+    #CLOCK_ROMDRIVER_PRESENT
   )
   zephyr_library_sources(
     # Some functions are not provided by ULPSS_CLOCK_ROMDRIVER_PRESENT
@@ -159,7 +159,7 @@ zephyr_compile_definitions_ifdef(CONFIG_DMA_SILABS_SIWX91X_UDMA
 )
 
 zephyr_compile_definitions_ifdef(CONFIG_DMA_SILABS_SIWX91X_GPDMA
-  GPDMA_ROMDRIVER_PRESENT # replace rsi_gpdma.c
+  #GPDMA_ROMDRIVER_PRESENT # replace rsi_gpdma.c
 )
 
 zephyr_compile_definitions_ifdef(CONFIG_ENTROPY_SILABS_SIWX91X
@@ -308,6 +308,7 @@ if(CONFIG_PM)
     SLI_WIRELESS_COMPONENT_PRESENT
   )
   zephyr_code_relocate(FILES
+    ${WISECONNECT}/components/device/silabs/si91x/mcu/drivers/systemlevel/src/rsi_pll.c
     ${WISECONNECT}/components/device/silabs/si91x/mcu/core/chip/src/rsi_deepsleep_soc.c
     ${WISECONNECT}/components/device/silabs/si91x/mcu/drivers/service/power_manager/src/sl_si91x_power_manager.c
     ${WISECONNECT}/components/device/silabs/si91x/mcu/drivers/service/power_manager/src/sli_si91x_power_manager.c
@@ -316,5 +317,6 @@ if(CONFIG_PM)
     ${ZEPHYR_BASE}/drivers/gpio/gpio_silabs_siwx91x.c
     ${ZEPHYR_BASE}/drivers/gpio/gpio_silabs_siwx91x_uulp.c
     LOCATION RAM
+    NOKEEP
   )
 endif() # CONFIG_PM

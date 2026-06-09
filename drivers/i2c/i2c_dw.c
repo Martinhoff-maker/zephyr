@@ -18,6 +18,9 @@
 #include <stdbool.h>
 
 #include <zephyr/drivers/i2c.h>
+#if IS_ENABLED(CONFIG_CLOCK_CONTROL)
+#include <zephyr/drivers/clock_control.h>
+#endif
 #include <zephyr/kernel.h>
 #include <zephyr/init.h>
 #include <zephyr/pm/device.h>
@@ -1292,6 +1295,15 @@ static int i2c_dw_initialize(const struct device *dev)
 	}
 #endif
 
+#if IS_ENABLED(CONFIG_CLOCK_CONTROL)
+	if (rom->use_clock) {
+		ret = clock_control_on(rom->clock_dev, rom->clock_subsys);
+		if (ret != 0 && ret != -EALREADY) {
+			return ret;
+		}
+	}
+#endif
+
 #if DT_ANY_INST_ON_BUS_STATUS_OKAY(pcie)
 	if (rom->pcie) {
 		struct pcie_bar mbar;
@@ -1491,7 +1503,21 @@ static int i2c_dw_initialize(const struct device *dev)
 #define TIMEOUT_DW_CONFIG(n)
 #endif
 
+<<<<<<< Updated upstream
 /* clang-format off */
+=======
+#if IS_ENABLED(CONFIG_CLOCK_CONTROL)
+#define I2C_DW_CLOCK_CFG(n)                                                                        \
+	COND_CODE_1(DT_INST_NODE_HAS_PROP(n, clocks),                                              \
+		    (.use_clock = true,                                                            \
+		     .clock_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(n)),                           \
+		     .clock_subsys = (clock_control_subsys_t)DT_INST_CLOCKS_CELL(n, clkid)),                                    \
+		    (.use_clock = false))
+#else
+#define I2C_DW_CLOCK_CFG(n)
+#endif
+
+>>>>>>> Stashed changes
 #define I2C_DEVICE_INIT_DW(n)                                                                      \
 	PINCTRL_DW_DEFINE(n);                                                                      \
 	I2C_PCIE_DEFINE(n);                                                                        \
@@ -1509,7 +1535,11 @@ static int i2c_dw_initialize(const struct device *dev)
 		.fs_spk_len = MAX((uint8_t)DT_INST_PROP_OR(n, fs_spike_len, 0), DW_IC_SPKLEN_MIN), \
 		.hs_spk_len = MAX((uint8_t)DT_INST_PROP_OR(n, hs_spike_len, 0), DW_IC_SPKLEN_MIN), \
 		TIMEOUT_DW_CONFIG(n) RESET_DW_CONFIG(n) PINCTRL_DW_CONFIG(n) I2C_DW_INIT_PCIE(n)   \
+<<<<<<< Updated upstream
 			I2C_CONFIG_DMA_INIT(n) CLOCK_DW_CONFIG(n)};                                \
+=======
+			I2C_CONFIG_DMA_INIT(n) I2C_DW_CLOCK_CFG(n)};                                                   \
+>>>>>>> Stashed changes
 	BUILD_ASSERT(DT_INST_PROP_OR(n, sda_hold_tx, 0) <= 0xffff, "Invalid SDA_HOLD_TX value");   \
 	BUILD_ASSERT(DT_INST_PROP_OR(n, sda_hold_rx, 0) <= 0xff, "Invalid SDA_HOLD_RX value");     \
 	static struct i2c_dw_dev_config i2c_##n##_runtime;                                         \

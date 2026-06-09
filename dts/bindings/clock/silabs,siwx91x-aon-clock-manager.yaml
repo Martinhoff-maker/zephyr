@@ -8,6 +8,10 @@ description: |
   reference clock selection for the M4SS and ULPSS subsystems during sleep
   and wake transitions.
 
+  SIWX91X_CLK_RTC and SIWX91X_CLK_WATCHDOG use a fixed UULP LF reference;
+  do not add clock-route children for them. SIWX91X_CLK_SYSRTC is owned by
+  the sleeptimer stack, not by clock-route children here.
+
 compatible: "silabs,siwx91x-aon-clock-manager"
 
 include: [clock-controller.yaml, base.yaml]
