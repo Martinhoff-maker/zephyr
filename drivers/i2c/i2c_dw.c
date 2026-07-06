@@ -21,6 +21,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/init.h>
 #include <zephyr/pm/device.h>
+#include <zephyr/pm/device_runtime.h>
 #include <zephyr/pm/policy.h>
 #include <zephyr/irq.h>
 #include <string.h>
@@ -97,6 +98,8 @@ int i2c_dw_recovery_bus(const struct device *dev)
 	int ret = 0;
 	struct i2c_dw_dev_config *const dw = dev->data;
 
+	pm_device_runtime_get(dev);
+
 	/* lock bus */
 	ret = k_sem_take(&dw->bus_sem, K_FOREVER);
 	if (ret != 0) {
@@ -106,6 +109,8 @@ int i2c_dw_recovery_bus(const struct device *dev)
 	ret = i2c_recovery_bus(dev);
 	/* unlock bus */
 	k_sem_give(&dw->bus_sem);
+
+	pm_device_runtime_put(dev);
 
 	return ret;
 }
@@ -814,6 +819,8 @@ static int i2c_dw_transfer(const struct device *dev, struct i2c_msg *msgs, uint8
 		return 0;
 	}
 
+	pm_device_runtime_get(dev);
+
 	/* semaphore to support I2C_CALLBACK */
 	ret = k_sem_take(&dw->bus_sem, K_FOREVER);
 	if (ret != 0) {
@@ -959,6 +966,8 @@ error:
 	/* keep error mask for bus recovery */
 	dw->state &= I2C_DW_STUCK_ERR_MASK;
 	k_sem_give(&dw->bus_sem);
+
+	pm_device_runtime_put(dev);
 
 	return ret;
 }
@@ -1247,6 +1256,46 @@ static DEVICE_API(i2c, funcs) = {
 	.recover_bus = i2c_dw_recovery_bus,
 };
 
+static int i2c_dw_pm_action(const struct device *dev, enum pm_device_action action)
+{
+	const struct i2c_dw_rom_config *const rom = dev->config;
+	int ret = 0;
+
+	switch (action) {
+	case PM_DEVICE_ACTION_RESUME:
+		break;
+	case PM_DEVICE_ACTION_SUSPEND:
+		break;
+	case PM_DEVICE_ACTION_TURN_ON:
+#if DT_ANY_INST_HAS_PROP_STATUS_OKAY(clocks)
+		if (rom->clk_dev != NULL) {
+			ret = clock_control_on(rom->clk_dev, rom->clk_id);
+			if (ret < 0) {
+				LOG_ERR("Failed to enable the clock");
+				return ret;
+			}
+		}
+#endif
+
+#if defined(CONFIG_PINCTRL)
+		if (rom->pcfg != NULL) {
+			ret = pinctrl_apply_state(rom->pcfg, PINCTRL_STATE_DEFAULT);
+			if (ret < 0) {
+				return ret;
+			}
+		}
+#endif
+		break;
+	case PM_DEVICE_ACTION_TURN_OFF:
+		break;
+	default:
+		return -ENOTSUP;
+	}
+
+	return 0;
+}
+
+
 static int i2c_dw_initialize(const struct device *dev)
 {
 	const struct i2c_dw_rom_config *const rom = dev->config;
@@ -1388,7 +1437,7 @@ static int i2c_dw_initialize(const struct device *dev)
 #endif
 	LOG_DBG("initialize done");
 
-	return ret;
+	return pm_device_driver_init(dev, i2c_dw_pm_action);
 }
 
 #if defined(CONFIG_PINCTRL)
@@ -1499,9 +1548,10 @@ static int i2c_dw_initialize(const struct device *dev)
 	BUILD_ASSERT(DT_INST_PROP_OR(n, sda_hold_tx, 0) <= 0xffff, "Invalid SDA_HOLD_TX value");   \
 	BUILD_ASSERT(DT_INST_PROP_OR(n, sda_hold_rx, 0) <= 0xff, "Invalid SDA_HOLD_RX value");     \
 	static struct i2c_dw_dev_config i2c_##n##_runtime;                                         \
-	I2C_DEVICE_DT_INST_DEFINE(n, i2c_dw_initialize, NULL, &i2c_##n##_runtime,                  \
-				  &i2c_config_dw_##n, POST_KERNEL, CONFIG_I2C_INIT_PRIORITY,       \
-				  &funcs);                                                         \
+	PM_DEVICE_DT_INST_DEFINE(n, i2c_dw_pm_action);                                             \
+	I2C_DEVICE_DT_INST_DEFINE(n, i2c_dw_initialize, PM_DEVICE_DT_INST_GET(n),                  \
+				  &i2c_##n##_runtime, &i2c_config_dw_##n, POST_KERNEL,             \
+				  CONFIG_I2C_INIT_PRIORITY, &funcs);                               \
 	I2C_DW_IRQ_CONFIG(n)
 
 DT_INST_FOREACH_STATUS_OKAY(I2C_DEVICE_INIT_DW)
