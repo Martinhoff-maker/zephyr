@@ -294,6 +294,8 @@
 			interrupts = <13 0>;
 			interrupt-names = "i2c2";
 			clocks = <&clock0 SIWX91X_CLK_ULP_I2C>;
+			power-domains = <&siwx91x_soc_pd>;
+			zephyr,pm-device-runtime-auto;
 			status = "disabled";
 		};
 
@@ -305,6 +307,8 @@
 			interrupts = <42 0>;
 			interrupt-names = "i2c0";
 			clocks = <&clock0 SIWX91X_CLK_I2C0>;
+			power-domains = <&siwx91x_soc_pd>;
+			zephyr,pm-device-runtime-auto;
 			status = "disabled";
 		};
 
